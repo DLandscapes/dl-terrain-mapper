@@ -73,11 +73,27 @@ export function symbolField(grid, frame, opts = {}) {
   // The full-size circle spans the sample spacing, so neighbouring maxima just
   // touch at maxFraction 1 — the density the eye reads as "solid".
   const full = (stride * cell * maxF) / 2;
-  // ⚠️ SAMPLED FROM THE CENTRE OUTWARD so the pattern does not slide when the
-  // stride changes. Anchoring at row zero makes every change of density look
-  // like the data moving.
-  const r0 = Math.floor(((nrows - 1) % stride) / 2);
-  const c0 = Math.floor(((ncols - 1) % stride) / 2);
+  // ⚠️ THE SAMPLE GRID IS ANCHORED TO THE WORLD, NOT TO THIS RASTER.
+  //
+  // It used to start from the raster's own centre, so the pattern would not
+  // slide when the stride changed — pleasant while dragging a slider, and
+  // wrong for the thing this tool is actually for. It made the grid a property
+  // of the TILE instead of the GROUND: two plates that abut exactly sampled on
+  // different phases, and at the seam their nearest rows of circles landed 1 m
+  // apart where the spacing was 3 m — a doubled row down the join, on plates
+  // meant to be indistinguishable from one surface.
+  //
+  // Anchored to the world, a cell is sampled when its GLOBAL index — its
+  // position on the ground, not its position in this file — is a multiple of
+  // the stride. Any tile of a model then samples exactly where the whole model
+  // would, and the hatch (which was fixed first, for the same reason) and the
+  // circle grid agree with each other as well.
+  //
+  // ⚠️ Math.round is safe across tiles of one grid: two rasters on the same
+  // grid share the same fractional offset, so they round the same way. Rasters
+  // that do NOT share a grid were never going to tile anyway.
+  const r0 = ((Math.round(originY / cell) % stride) + stride) % stride;
+  const c0 = ((-Math.round(originX / cell) % stride) + stride) % stride;
   const northY = originY;
 
   for (let r = r0; r < nrows; r += stride) {
