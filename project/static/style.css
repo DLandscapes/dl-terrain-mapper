@@ -32,6 +32,9 @@
   --card: #d9c39a;
   /* the viewport is the one dark surface: splats read best against it */
   --stage: #14161a;
+  /* The upload glyph — an arrow rising out of a tray. Inlined as a mask so it
+     takes its colour from the theme's own tokens and needs no second file. */
+  --dz-arrow: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 3l5 5h-3v7h-4V8H7l5-5z"/><path d="M4 17v3h16v-3h2v5H2v-5h2z"/></svg>');
   font-size: 15px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -58,20 +61,47 @@ body {
   color: var(--ink-soft); font-size: .74rem;
 }
 
-/* Upload area: two targets, because the tool holds two DEMs at two scales.
-   Each is dashed on its own so the pair reads as two places to drop rather
-   than as one zone with a caption. */
-#dropzone { display: flex; flex-direction: column; gap: 7px; text-align: center; }
-#dropzone .dz {
-  cursor: pointer;
-  border: 1.5px dashed var(--line); border-radius: 6px; padding: 13px 10px;
-  display: flex; flex-direction: column; gap: 4px;
+/* ---------- upload targets ----------
+   ⚠️ STYLED BY CLASS, NOT BY THE FIRST ZONE'S ID. This block used to read
+   `#dropzone .dz`, which styled the terrain target and NOTHING ELSE: the
+   photographs, the orthophoto, the QGIS style and the tile boundary all
+   rendered as bare text with no border, no padding and no pointer cursor, so
+   four of the five places you can load a file did not look like places you
+   could load a file. Marc asked where the tile boundary was loaded, which is
+   what an unclickable-looking control gets you. `.dz` is used on drop targets
+   and nowhere else, so the class is the honest selector. */
+#dropzone, #dropzone2, #dropzone3, #dropzone4, #dropzone5 {
+  display: flex; flex-direction: column; gap: 7px; text-align: center;
 }
+.dz {
+  cursor: pointer;
+  border: 1.5px dashed var(--line); border-radius: 6px; padding: 12px 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  background: var(--panel);
+  transition: border-color .12s, background .12s;
+}
+/* The affordance itself: an arrow into a tray. Drawn in CSS from the same two
+   tokens as everything else rather than fetched, because this tool ships no
+   icon set and must not start one for a single glyph. */
+.dz::before {
+  content: "";
+  width: 15px; height: 15px; margin-bottom: 1px; flex: none;
+  background: var(--ink-soft);
+  transition: background .12s;
+  -webkit-mask: var(--dz-arrow) center / contain no-repeat;
+  mask: var(--dz-arrow) center / contain no-repeat;
+}
+.dz:hover { border-color: var(--ink-soft); background: var(--bg); }
+.dz:hover::before { background: var(--ink); }
 /* Only the target under the pointer lights up. A window-wide highlight would
    say "drop anywhere" at the exact moment the user is choosing WHICH. */
-#dropzone .dz.dragover { border-color: var(--ink); background: var(--bg); }
-#dropzone .dz strong { font-size: .9rem; }
-#dropzone .dz span { color: var(--ink-soft); font-size: .78rem; }
+.dz.dragover { border-color: var(--ink); background: var(--bg); }
+.dz.dragover::before { background: var(--ink); }
+.dz strong { font-family: var(--font-head); font-size: .88rem; }
+/* The call to action reads at body weight; the caveats step down, so the eye
+   gets "what do I click" before "what must the file be". */
+.dz .act { color: var(--ink); font-size: .78rem; }
+.dz .fine, .dz > span:not(.act) { color: var(--ink-soft); font-size: .74rem; line-height: 1.45; }
 #dropzone > .or { color: var(--ink-soft); font-size: .72rem; }
 
 #scene-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }

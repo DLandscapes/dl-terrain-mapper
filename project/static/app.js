@@ -1478,6 +1478,21 @@ wireDrop("dropClip", "fileClip", async (files) => {
   }
   recompile();
 });
+// ⚠️ THE SIGNPOST OPENS THE SECTION AND SCROLLS TO THE ZONE, rather than just
+// naming it. The clip belongs at the END of the workflow — it is the last thing
+// that happens to a drawing — but "load a file" is something a reader looks for
+// in Import, and Export is closed by default. Marc asked where it was, which is
+// the whole argument for this button existing.
+$("gotoClip").addEventListener("click", () => {
+  const dz = $("dropClip");
+  const det = dz.closest("details");
+  if (det) det.open = true;
+  dz.scrollIntoView({ block: "center" });
+  // A brief mark, so the eye lands on the right thing in a long panel. Uses the
+  // existing dragover style rather than inventing a second highlight.
+  dz.classList.add("dragover");
+  setTimeout(() => dz.classList.remove("dragover"), 1200);
+});
 $("clipOn").addEventListener("change", () => {
   state.clipOn = $("clipOn").checked && !!state.clip;
   if ($("clipOn").checked && !state.clip) {

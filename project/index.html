@@ -311,9 +311,10 @@ details.panel[open] > summary .sec-badge { display: none; }
       <div class="subhead">Terrain</div>
       <div id="dropzone">
         <div class="dz" id="dropDEM"><strong>Elevation raster</strong>
-          <span>GeoTIFF, north-up. Drop or pick several at once — a DTM under a
-            DSM, the same ground in two years, or a whole plate set. They load
-            in name order; the first becomes the primary.</span></div>
+          <span class="act">Choose GeoTIFFs, or drop them here</span>
+          <span class="fine">North-up. Several at once is fine — a DTM under a DSM, the same
+            ground in two years, or a whole plate set. They load in name order; the first
+            becomes the primary.</span></div>
       </div>
       <div class="plist" id="layerList"></div>
       <p class="meta" id="demInfo">No raster loaded.</p>
@@ -322,14 +323,18 @@ details.panel[open] > summary .sec-badge { display: none; }
       <div class="subhead">Site photographs</div>
       <div id="dropzone2">
         <div class="dz" id="dropPhotos"><strong>Photographs</strong>
-          <span>JPEGs with GPS. Drop a folder's worth.</span></div>
+          <span class="act">Choose JPEGs, or drop them here</span>
+          <span class="fine">A folder's worth at a time. They are read in this page and
+            never uploaded; ones without GPS are kept and listed separately.</span></div>
       </div>
       <p class="meta" id="photoInfo">None loaded.</p>
 
       <div class="subhead">Orthophoto</div>
       <div id="dropzone3">
         <div class="dz" id="dropImage"><strong>Image</strong>
-          <span>GeoTIFF, PNG or JPEG.</span></div>
+          <span class="act">Choose an image, or drop it here</span>
+          <span class="fine">GeoTIFF, PNG or JPEG. Say where it came from below — a
+            restricted image can be previewed and will not export.</span></div>
       </div>
       <label class="field"><span>Licence</span>
         <select id="licence">
@@ -339,6 +344,14 @@ details.panel[open] > summary .sec-badge { display: none; }
           <option value="restricted">Restricted (education/research only)</option>
         </select></label>
       <p class="meta" id="imageInfo">None loaded.</p>
+
+      <div class="subhead">Tile boundary</div>
+      <p class="why">Working on one tile of a bigger model? Load the <b>whole</b> model here,
+        set every layer up over all of it, and cut your tile out at the end — the boundary
+        goes in <b>Export → Clip to a tile</b>. That order is what makes neighbouring tiles
+        match: the patterns are anchored to the ground, so a boundary is a line drawn through
+        one continuous field rather than two fields that have to be persuaded to agree.</p>
+      <button class="link" id="gotoClip">Go to the tile boundary in Export</button>
     </div>
   </details>
 
@@ -450,8 +463,10 @@ details.panel[open] > summary .sec-badge { display: none; }
         disagree, because there was only ever one field.</p>
       <div id="dropzone5">
         <div class="dz" id="dropClip"><strong>Tile boundary</strong>
-          <span>A polygon shapefile — the <b>.shp</b>, not the .dbf or .shx. Draw it in
-            QGIS and save it in the same CRS as your raster.</span></div>
+          <span class="act">Choose a <b>.shp</b> file, or drop it here</span>
+          <span class="fine">A polygon shapefile. Pick the <b>.shp</b> — not the .dbf or
+            .shx, which hold no geometry. Draw it in QGIS and save it in the same CRS as
+            your raster.</span></div>
       </div>
       <label class="check"><input type="checkbox" id="clipOn"> Clip the drawing to it</label>
       <button class="link" id="clipClear" style="font-size:.66rem">Remove the boundary</button>
@@ -626,7 +641,9 @@ details.panel[open] > summary .sec-badge { display: none; }
     <div class="subhead">From QGIS</div>
     <div id="dropzone4">
       <div class="dz" id="dropStyle"><strong>Layer style</strong>
-        <span>.qml or .sld saved from QGIS. Applies to the layer above.</span></div>
+        <span class="act">Choose a .qml or .sld, or drop it here</span>
+        <span class="fine">Saved from QGIS. Applies to the layer selected above, and every
+          decision it makes is logged.</span></div>
     </div>
     <label class="check"><input type="checkbox" id="qCut">
       Allow a style's colour to choose a <b>cut</b> pass</label>
