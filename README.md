@@ -12,6 +12,20 @@ Part of the Digital Landscapes tool family, beside
 builds the same ground as a **stack of solids**. This one draws it on **one
 plane**: line work and marks, depth represented rather than built.
 
+### Where it comes from
+
+In 2019 these maps were made by hand:
+**[Cartography of Hadseløya](https://digital-landscapes.com/2019/07/17/potentials-of-hadsel-island/)**
+— terrain potentials computed from Kartverket's open data and translated into
+laser-printed physical maps, fabricated in four sizes up to 120 × 90 cm at
+Makerspace Vesterålen.
+
+This tool is that drawing, automated. The largest of those maps is bigger than
+any laser bed and so had to be tiled — which is why every pattern here is
+anchored to **the ground** rather than to a plate, and why a tile is cut out of
+the finished drawing at the end rather than compiled on its own. Two neighbouring
+plates cannot disagree if there was only ever one field.
+
 ---
 
 ## Getting started

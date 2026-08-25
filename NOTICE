@@ -59,8 +59,13 @@ TECHNIQUES, PRIOR WORK AND DEBTS
 
 The proportional-symbol method
     Used by the circle grid and the image halftone. Marc Ihle's own technique,
-    first published for Hadseløya in 2017 on digital-landscapes.com and
-    generalised here.
+    developed in 2017 and generalised here.
+
+    It was applied at scale in "Cartography of Hadseløya" (2019) — terrain
+    potentials computed from Kartverket's open data and translated into
+    laser-printed physical maps, fabricated in four sizes up to 120 x 90 cm at
+    Makerspace Vesterålen. Those maps are what this tool automates:
+    https://digital-landscapes.com/2019/07/17/potentials-of-hadsel-island/
 
 The DLF laser-pass layer scheme
     DLF-00_engrave … DLF-05_cut_outer, carried UNCHANGED from DL-TerrainSlicer

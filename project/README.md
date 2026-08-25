@@ -77,7 +77,7 @@ moves.
 | `labels.js` | labels that cut their own gap in the line before the text is set into it |
 | `sheet.js` | the one place ground metres become sheet millimetres |
 | `utm.js` · `exif.js` · `photos.js` | photographs into the raster's own grid, with their bearings |
-| `symbols.js` | proportional symbols — Marc's Hadseløya technique (2017), ported from TerrainDiversity |
+| `symbols.js` | proportional symbols — Marc's own technique (2017), ported from TerrainDiversity |
 | `halftone.js` | an image as marks: vector halftone, triple halftone, or raster engrave |
 | `dxf.js` | R12 ASCII, no exponents, the six DLF pass layers |
 | `linestyle.js` | dash patterns cut into the geometry — never a DXF LINETYPE |

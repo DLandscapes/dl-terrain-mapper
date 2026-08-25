@@ -7,8 +7,14 @@
 // legend, one symbol at a time. On a laser that trade is not optional. The
 // machine draws marks; it has no tone.
 //
-// ⚠️ THIS IS MARC'S HADSELØYA TECHNIQUE (digital-landscapes.com, 2017),
-// GENERALISED. The sampling rules below are ported from DL-TerrainDiversity's
+// ⚠️ THIS IS MARC'S OWN TECHNIQUE, DEVELOPED 2017, GENERALISED HERE. It was
+// applied at scale in "Cartography of Hadseløya" (2019) — terrain potentials
+// laser-printed onto wood in four sizes up to 120 x 90 cm, which is larger than
+// any laser bed and therefore necessarily TILED. That drawing is what this tool
+// automates, and the tiling problem it ran into is why every pattern here is
+// anchored to the ground rather than to a plate:
+//   https://digital-landscapes.com/2019/07/17/potentials-of-hadsel-island/
+// The sampling rules below are ported from DL-TerrainDiversity's
 // symbols.js, where the same technique already carries the depth of cut and
 // fill on the grading plan. Two implementations of one idea drift apart, so the
 // RULES are copied deliberately and stated here rather than re-derived: sampled
