@@ -32,7 +32,7 @@ import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
 import { cutSections } from "./sections.js";
-import { clipDrawing, ringsBBox } from "./clip.js";
+import { clipDrawing, ringsBBox, pointInRings } from "./clip.js";
 import { DXF } from "./dxf.js";
 
 /** The default symbology — every value the compiler needs, in one place. */
@@ -830,10 +830,52 @@ export function compile(input) {
   // line. The floors below leave a 12 mm sheet placing everything exactly where
   // it did before, and give a 0 mm sheet somewhere to put them.
   const M = sym.sheet.margin;
-  const fx = Math.max(M, 4);                       // left edge of the furniture
-  const fBar = Math.max(M * 0.42, 4);
-  const fText = Math.max(M * 0.62, 7.4);
-  const fNorth = Math.max(M * 0.25, 3);
+  // ⚠️ THE FURNITURE FOLLOWS THE CLIP BOUNDARY, NOT THE SHEET (Marc,
+  // 2026-08-25). With a tile clipped out of one corner, a scale bar pinned to
+  // the sheet's own corner is not merely far away from the drawing — it is
+  // OUTSIDE THE OUTER CUT. The boundary is the cut, so anything beyond it is
+  // engraved on the offcut: burn time spent on scrap, and a plate that reaches
+  // the bench with no scale on it. The furniture is exempt from the clip
+  // (a scale bar cut in half is not a scale bar), which is exactly why it has
+  // to be PLACED correctly instead of trimmed into place.
+  const fbox = clipRings
+    ? ringsBBox(clipRings)
+    : { x0: 0, y0: 0, x1: sheet.width, y1: sheet.height };
+  // ⚠️ AND INSIDE THE BOUNDARY, NOT MERELY INSIDE ITS BOUNDING BOX. A tile
+  // boundary is an arbitrary polygon; the corner of its bbox is routinely
+  // outside the shape itself — the drawing Marc sent has exactly that geometry.
+  // Each piece is tested where it will actually sit and dropped if it misses.
+  const fits = (x, y) => !clipRings || pointInRings(x, y, clipRings);
+  const fx = fbox.x0 + Math.max(M, 4);             // left edge of the furniture
+  const fBar = fbox.y0 + Math.max(M * 0.42, 4);
+  const fText = fbox.y0 + Math.max(M * 0.62, 7.4);
+  const fNorth = fbox.y0 + Math.max(M * 0.25, 3);
+  const furnitureDropped = [];
+
+  // ⚠️ ONE CANDIDATE POSITION IS NOT ENOUGH — SEEK INWARD FROM THE CORNER.
+  // A tile boundary is an arbitrary polygon and the corner of its bounding box
+  // is routinely outside the shape. Tested on a ragged five-sided boundary of
+  // Marc's, placing at the corner alone dropped the scale bar, the north point
+  // AND the footer, on a tile with plenty of room a few millimetres in. The
+  // search steps toward the middle until the whole piece is inside, so a piece
+  // is only ever abandoned when the shape genuinely has nowhere to put it.
+  const SEEK = [0, 0.04, 0.09, 0.15, 0.22, 0.3, 0.4, 0.5];
+  const fw = fbox.x1 - fbox.x0, fh = fbox.y1 - fbox.y0;
+  /**
+   * @param {number} bx @param {number} by the corner to start from
+   * @param {number} sx @param {number} sy which way is "inward", ±1
+   * @param {(x:number,y:number)=>boolean} test every point the piece occupies
+   */
+  const seek = (bx, by, sx, sy, test) => {
+    if (!clipRings) return test(bx, by) ? { x: bx, y: by } : null;
+    for (const dy of SEEK) {
+      for (const dx of SEEK) {
+        const x = bx + sx * dx * fw, y = by + sy * dy * fh;
+        if (test(x, y)) return { x, y };
+      }
+    }
+    return null;
+  };
   // ⚠️ THE TITLE'S GAP FROM THE TOP EQUALS ITS GAP FROM THE LEFT (Marc,
   // 2026-08-24). The baseline sits one cap height below that gap, so the INK —
   // the part the eye measures — starts exactly `fx` from both edges. The old
@@ -850,34 +892,67 @@ export function compile(input) {
       sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true);
   }
   const foot = [];
+  // A horizontal run of ink fits when both ends and the middle are inside — a
+  // boundary edge can cut across the span without touching either end.
+  const spanFits = (x, y, w) => fits(x, y) && fits(x + w, y) && fits(x + w / 2, y);
+  let barAt = null;
   if (sym.sheet.scaleBar) {
     const bar = scaleBar(sheet, { x: fx, y: fBar, target: 45 });
-    for (const p of bar.paths) addFurniture(p, OPERATIONS.furniture);
-    foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
+    barAt = seek(fx, fBar, 1, 1, (x, y) => spanFits(x, y, bar.mm));
+    if (barAt) {
+      for (const p of scaleBar(sheet, { x: barAt.x, y: barAt.y, target: 45 }).paths) {
+        addFurniture(p, OPERATIONS.furniture);
+      }
+      foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
+    } else furnitureDropped.push("the scale bar");
   }
   if (sym.sheet.north) {
-    for (const p of northPoint({ x: sheet.width - fx, y: fNorth, size: 7 })) {
-      addFurniture(p, OPERATIONS.furniture);
-    }
+    const at = seek(fbox.x1 - Math.max(M, 4), fNorth, -1, 1,
+      (x, y) => fits(x - 1.6, y) && fits(x + 1.6, y) && fits(x, y + 7));
+    if (at) {
+      for (const p of northPoint({ x: at.x, y: at.y, size: 7 })) {
+        addFurniture(p, OPERATIONS.furniture);
+      }
+    } else furnitureDropped.push("the north point");
   }
   if (contourReport) foot.push(`CONTOURS ${fmt(interval)} M`);
   if (foot.length) {
-    for (const st of textStrokes(foot.join("   "), {
-      x: fx, y: fText, size: 2, tracking: 8,
-    })) addFurniture(st, OPERATIONS.furniture);
+    const text = foot.join("   ");
+    const w = measure(text, { size: 2, tracking: 8 }).width;
+    // ⚠️ THE FOOTER RIDES ABOVE THE BAR IT DESCRIBES. Placed independently the
+    // two drift apart, and a "50 M 1:200" caption three centimetres from its
+    // own bar is a caption for nothing.
+    const from = barAt ? { x: barAt.x, y: barAt.y + (fText - fBar) } : { x: fx, y: fText };
+    const at = spanFits(from.x, from.y, w) ? from
+      : seek(from.x, from.y, 1, 1, (x, y) => spanFits(x, y, w));
+    if (at) {
+      for (const st of textStrokes(text, { x: at.x, y: at.y, size: 2, tracking: 8 })) {
+        addFurniture(st, OPERATIONS.furniture);
+      }
+    } else furnitureDropped.push("the footer");
   }
   if (sym.sheet.title) {
-    for (const st of textStrokes(String(sym.sheet.title).toUpperCase(), {
-      x: fx, y: sheet.height - fTitle, size: TITLE_SIZE, tracking: 10,
-    })) addFurniture(st, OPERATIONS.furniture);
+    const t = String(sym.sheet.title).toUpperCase();
+    const w = measure(t, { size: TITLE_SIZE, tracking: 10 }).width;
+    const at = seek(fx, fbox.y1 - fTitle, 1, -1, (x, y) => spanFits(x, y, w));
+    if (at) {
+      for (const st of textStrokes(t, {
+        x: at.x, y: at.y, size: TITLE_SIZE, tracking: 10,
+      })) addFurniture(st, OPERATIONS.furniture);
+    } else furnitureDropped.push("the title");
   }
 
   // ── the legend ───────────────────────────────────────────────────────────
   if (sym.legend && sym.halftone.enabled && halftoneReport) {
-    const lx = sheet.width - fx - 30, ly = Math.max(M * 0.7, 4.5);
-    for (const st of textStrokes(String(halftoneReport.channels[0]).toUpperCase().slice(0, 18), {
-      x: lx, y: ly, size: 1.8, tracking: 6, anchor: "start",
-    })) addFurniture(st, OPERATIONS.furniture);
+    const label = String(halftoneReport.channels[0]).toUpperCase().slice(0, 18);
+    const lw = measure(label, { size: 1.8, tracking: 6 }).width;
+    const at = seek(fbox.x1 - Math.max(M, 4) - lw, fbox.y0 + Math.max(M * 0.7, 4.5), -1, 1,
+      (x, y) => spanFits(x, y, lw));
+    if (at) {
+      for (const st of textStrokes(label, {
+        x: at.x, y: at.y, size: 1.8, tracking: 6, anchor: "start",
+      })) addFurniture(st, OPERATIONS.furniture);
+    } else furnitureDropped.push("the halftone legend");
   }
 
   // ⚠️ SAID PLAINLY RATHER THAN LEFT TO BE DISCOVERED ON MATERIAL. With no
@@ -888,6 +963,19 @@ export function compile(input) {
     warnings.push(`With a ${fmt(M)} mm margin the scale bar, north point and title are `
       + `engraved over the drawing — there is no margin for them to sit in. Switch them off `
       + `for a plate meant to be assembled, or give the sheet a few millimetres.`);
+  }
+  if (clipRings) {
+    warnings.push(`The scale bar, north point and title are placed inside the clip boundary, `
+      + `not at the sheet's corners — beyond the boundary is the offcut, and furniture there `
+      + `would be engraved on material that gets cut away.`);
+    // ⚠️ A PIECE THAT COULD NOT BE PLACED IS NAMED. Silently dropping it would
+    // send a plate to the bench with no scale on it and nothing to say why.
+    if (furnitureDropped.length) {
+      warnings.push(`${furnitureDropped.join(", ")} could not be placed inside the boundary `
+        + `and ${furnitureDropped.length === 1 ? "was" : "were"} left off — the shape has no `
+        + `room at that corner. Switch ${furnitureDropped.length === 1 ? "it" : "them"} off `
+        + `deliberately, or give the tile a boundary with a straighter edge to sit against.`);
+    }
   }
 
   // ── the clip: cut the tile out of the finished drawing ───────────────────
