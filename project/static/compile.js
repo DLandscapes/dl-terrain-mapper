@@ -33,6 +33,7 @@ import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
 import { cutSections } from "./sections.js";
 import { clipDrawing, ringsBBox, pointInRings } from "./clip.js";
+import { buildFeature } from "./features.js";
 import { DXF } from "./dxf.js";
 
 /** The default symbology — every value the compiler needs, in one place. */
@@ -722,6 +723,41 @@ export function compile(input) {
     }
   }
 
+  // ── features: shapefiles drawn as points, lines and areas ────────────────
+  // ⚠️ CONVERTED HERE, DRAWN THERE. The map-unit -> sheet-mm transform is this
+  // file's job and nowhere else's (see sheet.js), so features.js receives
+  // millimetres and never learns what a raster is.
+  const featureReports = [];
+  for (const spec of (input.features || [])) {
+    if (!spec) continue;
+    const toMM = (x, y) => [sheet.X(x), sheet.Y(y)];
+    const mmRings = (spec.rings || []).map((r) => {
+      const q = new Float64Array(r.pts.length);
+      for (let i = 0; i < r.pts.length; i += 2) {
+        const [X, Y] = toMM(r.pts[i], r.pts[i + 1]);
+        q[i] = X; q[i + 1] = Y;
+      }
+      return { pts: q, hole: !!r.hole };
+    });
+    const mmPoints = (spec.points || []).map((p) => {
+      const [X, Y] = toMM(p.x, p.y);
+      return { x: X, y: Y };
+    });
+    const f = buildFeature(
+      { kind: spec.kind, rings: mmRings, points: mmPoints, style: spec.style, name: spec.name },
+      { sheet, tracer: { traceContours }, minLength: 0.3 });
+    for (const p of f.paths) {
+      // Clipped to the sheet like every other translation - a feature from a
+      // shapefile covering more ground than the plate must not send strokes
+      // off the material.
+      for (const part of clipToSheet(p.pts, p.closed, sheet)) {
+        add(part.pts, p.layer, part.closed === true && p.closed);
+      }
+    }
+    for (const w of f.warnings) warnings.push(w);
+    featureReports.push(f.report);
+  }
+
   // ── sections: the ground cut open ────────────────────────────────────────
   // Marc, 2026-08-24: "three sections always running horizontally through the
   // centre of the plate." Three cuts at 0.25 / 0.50 / 0.75 put one exactly on
@@ -1092,6 +1128,7 @@ export function compile(input) {
       symbols: symbolReports,
       hatches: hatchReports,
       sections: sectionReports,
+      features: featureReports,
       clip: clipReport,
       sheets: [...sheetNames],
       totals: { paths: paths2.length, circles: circles2.length,
@@ -1194,6 +1231,12 @@ export function reportText(drawing, extra = {}) {
       ? "cut as WINDOWS through the surface sheet — the voids are the removed ground"
       : `cut from sheet "${g.sheet}" and glued on — the pieces are the added ground`}`
       + ` (${g.pass})`);
+  }
+  for (const g of (r.features || [])) {
+    L.push(`features "${g.name}": ${g.drawn} ${g.kind}${g.drawn === 1 ? "" : "s"} on ${g.pass}`
+      + `${g.dropped ? `, ${g.dropped} off the sheet` : ""}`);
+    L.push(`          ${g.style}`
+      + `${g.fillStrokes ? ` — ${g.fillStrokes} fill strokes` : ""}`);
   }
   for (const g of (r.symbols || [])) {
     L.push(`circle grid "${g.name}": ${g.count} circles at ${g.spacingM} m spacing, `

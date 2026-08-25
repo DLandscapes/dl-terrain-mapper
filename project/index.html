@@ -384,6 +384,52 @@ details.panel[open] > summary .sec-badge { display: none; }
       <label class="check"><input type="checkbox" id="pBear" checked> Draw the bearing</label>
       <label class="check"><input type="checkbox" id="pHalo"> Draw the GPS uncertainty</label>
       <div class="plist" id="plist"></div>
+
+      <div class="subhead">Shapefile features</div>
+      <p class="why">A survey of trees is <b>points</b>, a path is a <b>line</b>, a planting bed
+        is a <b>polygon</b>. Each gets the styling its geometry can carry — an area takes a
+        fill pattern, a line takes a linetype, a point takes a radius first, because the symbol
+        is invented and how big it is, is the decision.</p>
+      <div id="dropzone6">
+        <div class="dz" id="dropFeat"><strong>Features</strong>
+          <span class="act">Choose .shp files, or drop them here</span>
+          <span class="fine">Points, lines or polygons, in the same CRS as your raster.
+            Several at once is fine — each becomes its own styled layer.</span></div>
+      </div>
+      <div class="plist" id="featList"></div>
+      <p class="meta" id="featInfo">None loaded.</p>
+
+      <div id="featStyle" hidden>
+        <label class="field"><span>Draw on pass</span><select id="ftPass"></select></label>
+
+        <div id="ftAreaOnly">
+          <label class="field"><span>Fill pattern</span><select id="ftPattern"></select></label>
+          <label class="field"><span>Fill spacing (mm)</span>
+            <input type="number" id="ftSpacing" min="0.3" max="20" step="0.1" value="2"></label>
+          <label class="field"><span>Fill angle (°)</span>
+            <input type="number" id="ftRotation" min="0" max="180" step="5" value="45"></label>
+          <label class="check"><input type="checkbox" id="ftOutline" checked>
+            Draw the outline too</label>
+        </div>
+
+        <div id="ftPointOnly">
+          <label class="field"><span>Symbol radius (mm)</span>
+            <input type="number" id="ftRadius" min="0.3" max="30" step="0.1" value="2"></label>
+          <label class="field"><span>Inside the symbol</span>
+            <select id="ftPointFill"></select></label>
+          <label class="field"><span>Inside spacing (mm)</span>
+            <input type="number" id="ftPointSpacing" min="0.2" max="10" step="0.1" value="1"></label>
+        </div>
+
+        <label class="field"><span>Line style</span><select id="ftLinetype"></select></label>
+        <label class="field"><span>Line style scale</span>
+          <input type="number" id="ftScale" min="0.2" max="10" step="0.1" value="1"></label>
+        <button class="link" id="ftRemove" style="font-size:.66rem">Remove this layer</button>
+        <p class="why">⚠️ A fill is many separate strokes, and every one is a head move. The
+          count is reported before you export. ⚠️ These line styles are the Slicer's own
+          measured run lengths — a dot is 0.4 mm because 0.1 mm burns were invisible on
+          cardboard.</p>
+      </div>
     </div>
   </details>
 
@@ -805,6 +851,7 @@ details.panel[open] > summary .sec-badge { display: none; }
 <input type="file" id="fileImage" accept=".tif,.tiff,image/*" hidden>
 <input type="file" id="fileStyle" accept=".qml,.sld,.xml" hidden>
 <input type="file" id="fileClip" accept=".shp" multiple hidden>
+<input type="file" id="fileFeat" accept=".shp" multiple hidden>
 
 <script type="module" src="static/app.js"></script>
 </body>

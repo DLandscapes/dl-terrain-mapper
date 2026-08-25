@@ -33,6 +33,24 @@ const TYPES = {
 
 /** Types whose records carry parts + points in the layout we can walk. */
 const AREAL = new Set([3, 5, 13, 15, 23, 25]);
+/** Single-point types: type, X, Y, then optional Z/M this reader ignores. */
+const SINGLE = new Set([1, 11, 21]);
+/** Multipoint: type, box, count, then the coordinate array. */
+const MULTI = new Set([8, 18, 28]);
+
+/**
+ * What a shapefile is FOR, in this tool's terms.
+ *
+ * ⚠️ THE READER NO LONGER REFUSES POINTS. It used to, because its only caller
+ * was the clip boundary and points enclose nothing. Now shapefiles also arrive
+ * as DRAWN FEATURES — a survey of trees is points, a path is a line, a planting
+ * bed is a polygon — so refusing a whole geometry type at the reader was the
+ * wrong place for that rule. The clip handler makes its own refusal, where the
+ * requirement actually lives.
+ * @param {number} t
+ */
+const kindOf = (t) => (SINGLE.has(t) || MULTI.has(t) ? "point"
+  : (t === 3 || t === 13 || t === 23) ? "line" : "polygon");
 
 /**
  * Signed area of a ring, ×2. Positive is counter-clockwise in a y-up frame.
@@ -78,20 +96,18 @@ export function readShapefile(buf, o = {}) {
   if (version !== 1000) notes.push(`unexpected shapefile version ${version} — read anyway`);
 
   const label = TYPES[shapeType] || `type ${shapeType}`;
-  if (!AREAL.has(shapeType)) {
-    throw new Error(`this shapefile holds ${label} shapes. A clip boundary has to be `
-      + `a POLYGON (or a closed polyline) — points and multipoints enclose nothing.`);
+  if (!AREAL.has(shapeType) && !SINGLE.has(shapeType) && !MULTI.has(shapeType)) {
+    throw new Error(`this shapefile holds ${label} shapes, which this reader does not `
+      + `understand. It reads points, multipoints, polylines and polygons.`);
   }
-  if (shapeType === 3 || shapeType === 13 || shapeType === 23) {
-    notes.push(`the shapes are polylines, not polygons — each one is treated as a `
-      + `closed ring, which is right for a boundary drawn as a line and wrong for `
-      + `an open line`);
-  }
+  const kind = kindOf(shapeType);
 
   const bbox = { x0: dv.getFloat64(36, true), y0: dv.getFloat64(44, true),
                  x1: dv.getFloat64(52, true), y1: dv.getFloat64(60, true) };
 
   const rings = [];
+  /** @type {{x:number,y:number}[]} */
+  const points = [];
   let shapes = 0;
   // The header says the file length in 16-bit words; trust the buffer if the
   // header disagrees, because a truncated download is commoner than a lying
@@ -105,7 +121,24 @@ export function readShapefile(buf, o = {}) {
     if (contentBytes <= 0 || body + contentBytes > end) break;
     const st = dv.getInt32(body, true);
     if (st === 0) { at = body + contentBytes; continue; }   // a null shape
-    if (AREAL.has(st)) {
+    if (SINGLE.has(st)) {
+      // type(4) X(8) Y(8) — Z and M, where present, follow and are ignored.
+      if (body + 20 <= end) {
+        points.push({ x: dv.getFloat64(body + 4, true), y: dv.getFloat64(body + 12, true) });
+        shapes++;
+      }
+    } else if (MULTI.has(st)) {
+      // type(4) box(32) numPoints(4) then the pairs.
+      const n = dv.getInt32(body + 36, true);
+      const pAt = body + 40;
+      if (n > 0 && pAt + n * 16 <= end) {
+        for (let i = 0; i < n; i++) {
+          points.push({ x: dv.getFloat64(pAt + i * 16, true),
+            y: dv.getFloat64(pAt + i * 16 + 8, true) });
+        }
+        shapes++;
+      }
+    } else if (AREAL.has(st)) {
       const numParts = dv.getInt32(body + 36, true);
       const numPoints = dv.getInt32(body + 40, true);
       if (numParts > 0 && numPoints > 0) {
@@ -146,16 +179,21 @@ export function readShapefile(buf, o = {}) {
     at = body + contentBytes;
   }
 
-  if (!rings.length) {
-    throw new Error(`no usable rings were found in ${o.name || "the file"} — `
-      + `it parsed as ${label} but every shape was empty or had fewer than three points.`);
+  if (!rings.length && !points.length) {
+    throw new Error(`nothing usable was found in ${o.name || "the file"} — it parsed as `
+      + `${label} but every shape was empty, or had fewer than three points for a ring.`);
   }
-  // A single ring wound as a hole is almost certainly a boundary digitised
-  // anticlockwise rather than a genuine hole with nothing around it.
-  if (rings.length === 1 && rings[0].hole) {
+  // ⚠️ ONLY A POLYGON FILE GETS THE WINDING RULE. A single ring wound
+  // anticlockwise in a POLYGON file is almost certainly a boundary digitised
+  // the wrong way round rather than a hole with nothing around it. A POLYLINE
+  // file has no winding semantics at all — a path drawn east-to-west is not a
+  // hole — so applying the rule there would invent meaning the format does not
+  // carry.
+  if (kind === "polygon" && rings.length === 1 && rings[0].hole) {
     rings[0].hole = false;
     notes.push(`the only ring is wound counter-clockwise, which in this format means `
       + `a hole; taken as the outer boundary instead`);
   }
-  return { rings, type: label, bbox, shapes, notes };
+  if (kind === "line") for (const r of rings) r.hole = false;
+  return { kind, rings, points, type: label, bbox, shapes, notes };
 }

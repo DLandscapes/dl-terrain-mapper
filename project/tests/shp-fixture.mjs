@@ -16,12 +16,52 @@
  *   type, for testing the refusals
  * @returns {ArrayBuffer}
  */
+const SINGLE = new Set([1, 11, 21]);
+const MULTI = new Set([8, 18, 28]);
+
 export function makeSHP(shapes, o = {}) {
   const type = o.type ?? 5;
   const recs = [];
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 
   for (const rings of shapes) {
+    // ⚠️ POINT AND MULTIPOINT HAVE THEIR OWN RECORD LAYOUTS. Writing the
+    // polygon layout for every type is what an earlier version of this fixture
+    // did, and it made a single-point test PASS BY ACCIDENT: the reader picked
+    // up the bounding box's minimum, which for one point is the point. A
+    // fixture that is wrong in the same direction as the reader proves nothing.
+    if (SINGLE.has(type) || MULTI.has(type)) {
+      const flat = rings.flat();
+      for (let i = 0; i < flat.length; i += 2) {
+        x0 = Math.min(x0, flat[i]); x1 = Math.max(x1, flat[i]);
+        y0 = Math.min(y0, flat[i + 1]); y1 = Math.max(y1, flat[i + 1]);
+      }
+      if (SINGLE.has(type)) {
+        // type(4) X(8) Y(8)
+        const b = new ArrayBuffer(20);
+        const dv = new DataView(b);
+        dv.setInt32(0, type, true);
+        dv.setFloat64(4, flat[0], true);
+        dv.setFloat64(12, flat[1], true);
+        recs.push(new Uint8Array(b));
+      } else {
+        // type(4) box(32) numPoints(4) points(16n)
+        const n = flat.length / 2;
+        const b = new ArrayBuffer(40 + n * 16);
+        const dv = new DataView(b);
+        dv.setInt32(0, type, true);
+        dv.setFloat64(4, x0, true); dv.setFloat64(12, y0, true);
+        dv.setFloat64(20, x1, true); dv.setFloat64(28, y1, true);
+        dv.setInt32(36, n, true);
+        for (let i = 0; i < n; i++) {
+          dv.setFloat64(40 + i * 16, flat[i * 2], true);
+          dv.setFloat64(48 + i * 16, flat[i * 2 + 1], true);
+        }
+        recs.push(new Uint8Array(b));
+      }
+      continue;
+    }
+
     let np = 0;
     for (const r of rings) np += r.length / 2 + 1;      // +1 for the closing point
     // content: type(4) box(32) numParts(4) numPoints(4) parts(4n) points(16np)

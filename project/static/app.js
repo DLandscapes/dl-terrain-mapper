@@ -30,6 +30,8 @@ import { PASS_COLOURS, PASS_LABELS, passColour } from "./dxf.js";
 import { niceInterval } from "./contours.js";
 import { slopeDegrees } from "./symbols.js";
 import { readShapefile } from "./shapefile.js";
+import { FILL_PATTERNS, PATTERN_ORDER } from "./patterns.js";
+import { FEATURE_DEFAULTS, FEATURE_LINETYPES, LINETYPE_ORDER } from "./features.js";
 import { ruggedness, roughness, wetnessIndex, indexNote } from "./terrain.js";
 
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
@@ -55,6 +57,9 @@ const state = {
   // without reloading the file.
   /** @type {any} */ clip: null,
   clipOn: false,
+  // Drawn shapefile layers - points, lines and areas, each with its own style.
+  /** @type {any[]} */ features: [],
+  activeFeature: 0,
   /** @type {any} */ drawing: null,
   unlocated: [],
   selected: -1,
@@ -265,7 +270,7 @@ for (const id of ["cStyle", "cIdxStyle"]) {
   }
 }
 const PASS_PICKERS = ["cPass", "cIdxPass", "cLabelPass", "mPass", "gPassPlus", "gPassMinus",
-  "hhPass", "xPass", "xLinePass", "kPass"];
+  "hhPass", "xPass", "xLinePass", "kPass", "ftPass"];
 for (const id of PASS_PICKERS) {
   for (const [name, label] of Object.entries(PASS_LABELS)) {
     const o = document.createElement("option");
@@ -1033,6 +1038,7 @@ function compileInput(forExport) {
     symbols: buildSymbols(),
     hatches: buildHatches(),
     sections: buildSections(),
+    features: buildFeatures(),
     clip: state.clipOn ? state.clip : null,
     image: state.image,
     sym: state.sym,
@@ -1583,6 +1589,200 @@ wireDrop("dropDEM", "fileDEM", async (files) => {
   $("demInfo").innerHTML = parts.join("<br>") || "No raster loaded.";
   syncLayer(); paintLayers(); recompile();
 });
+// ── shapefile features ──────────────────────────────────────────────────────
+// ⚠️ FEATURES ARE A LIST, LIKE THE RASTERS, AND FOR THE SAME REASON: a site
+// carries several of them at once — a path, a bed, a tree survey — and each
+// needs its own styling and its own laser pass, or nobody can tell one from
+// another on the plate. The controls edit the SELECTED layer and the list says
+// which that is, the same grammar the raster list already uses.
+const FEATURE_KIND_LABEL = { point: "points", line: "lines", polygon: "areas" };
+
+/** Fill the pattern pickers once, grouped exactly as the Slicer groups them. */
+function fillPatternPickers() {
+  const groups = {};
+  for (const key of PATTERN_ORDER) {
+    const [g, label] = FILL_PATTERNS[key];
+    (groups[g] = groups[g] || []).push([key, label]);
+  }
+  for (const [id, withNone] of [["ftPattern", true], ["ftPointFill", true]]) {
+    const sel = $(id);
+    if (!sel) continue;
+    sel.innerHTML = "";
+    if (withNone) {
+      const o = document.createElement("option");
+      o.value = "none";
+      o.textContent = id === "ftPattern" ? "None — outline only" : "Nothing";
+      sel.appendChild(o);
+    }
+    for (const [g, items] of Object.entries(groups)) {
+      const grp = document.createElement("optgroup");
+      grp.label = g;
+      for (const [key, label] of items) {
+        const o = document.createElement("option");
+        o.value = key; o.textContent = label;
+        grp.appendChild(o);
+      }
+      sel.appendChild(grp);
+    }
+  }
+  const lt = $("ftLinetype");
+  if (lt) {
+    lt.innerHTML = "";
+    for (const key of LINETYPE_ORDER) {
+      const o = document.createElement("option");
+      o.value = key; o.textContent = FEATURE_LINETYPES[key].label;
+      lt.appendChild(o);
+    }
+  }
+}
+
+const activeFeature = () => state.features[state.activeFeature] || null;
+
+function paintFeatureList() {
+  const host = $("featList");
+  if (!host) return;
+  host.innerHTML = "";
+  setTimeout(syncGrip, 0);
+  state.features.forEach((f, i) => {
+    const el = document.createElement("div");
+    el.className = "pitem" + (i === state.activeFeature ? " sel" : "");
+    el.title = `${f.name} — ${f.count} ${FEATURE_KIND_LABEL[f.kind]}`;
+    el.innerHTML = `<span class="n" style="background:${passColour(f.style.pass)}">${i + 1}</span>
+      <span class="grow">${esc(f.name)}</span>
+      <span class="val">${esc(FEATURE_KIND_LABEL[f.kind])} · ${f.count}</span>`;
+    el.addEventListener("click", () => {
+      state.activeFeature = i;
+      syncFeature(); paintFeatureList();
+    });
+    host.appendChild(el);
+  });
+}
+
+/** Push the selected feature layer's style into the controls. */
+function syncFeature() {
+  const f = activeFeature();
+  const box = $("featStyle");
+  if (!box) return;
+  box.hidden = !f;
+  if (!f) { paintSwatches(); return; }
+  const st = f.style;
+  // ⚠️ THE CONTROLS A GEOMETRY CANNOT USE ARE HIDDEN, NOT DISABLED. A greyed
+  // "fill pattern" on a line layer invites the question "why not?"; an absent
+  // one says the honest thing, which is that a line has no inside.
+  $("ftAreaOnly").hidden = f.kind !== "polygon";
+  $("ftPointOnly").hidden = f.kind !== "point";
+  $("ftPass").value = st.pass;
+  if (f.kind === "polygon") {
+    $("ftPattern").value = st.pattern;
+    $("ftSpacing").value = String(st.spacingMM);
+    $("ftRotation").value = String(st.rotationDeg);
+    $("ftOutline").checked = st.outline !== false;
+  }
+  if (f.kind === "point") {
+    $("ftRadius").value = String(st.radiusMM);
+    $("ftPointFill").value = st.pattern;
+    $("ftPointSpacing").value = String(st.spacingMM);
+  }
+  $("ftLinetype").value = st.linetype;
+  $("ftScale").value = String(st.linetypeScale);
+  paintSwatches();
+}
+
+/** Read the controls back into the selected feature layer. */
+function gatherFeature() {
+  const f = activeFeature();
+  if (!f) return;
+  const st = f.style;
+  st.pass = $("ftPass").value;
+  st.linetype = $("ftLinetype").value;
+  st.linetypeScale = Math.min(10, Math.max(0.2, +$("ftScale").value || 1));
+  if (f.kind === "polygon") {
+    st.pattern = $("ftPattern").value;
+    st.spacingMM = Math.min(20, Math.max(0.3, +$("ftSpacing").value || 2));
+    st.rotationDeg = +$("ftRotation").value || 0;
+    st.outline = $("ftOutline").checked;
+  }
+  if (f.kind === "point") {
+    st.radiusMM = Math.min(30, Math.max(0.3, +$("ftRadius").value || 2));
+    st.pattern = $("ftPointFill").value;
+    st.spacingMM = Math.min(10, Math.max(0.2, +$("ftPointSpacing").value || 1));
+  }
+}
+
+/** The feature specs the compiler takes. Geometry stays in MAP units here. */
+function buildFeatures() {
+  return state.features.map((f) => ({
+    kind: f.kind, name: f.name, rings: f.rings, points: f.points, style: f.style,
+  }));
+}
+
+wireDrop("dropFeat", "fileFeat", async (files) => {
+  const info = $("featInfo");
+  const added = [], failed = [];
+  for (const file of [...files].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))) {
+    if (!/\.shp$/i.test(file.name)) {
+      failed.push(`${file.name} is not a .shp — a shapefile is several files sharing a `
+        + `name, and only .shp holds the geometry`);
+      continue;
+    }
+    try {
+      const r = readShapefile(await file.arrayBuffer(), { name: file.name });
+      const style = JSON.parse(JSON.stringify(FEATURE_DEFAULTS[r.kind]));
+      // ⚠️ EACH LAYER ARRIVES ON THE NEXT PASS, for the same reason a raster
+      // does: two feature sets drawn identically are two nobody can tell apart.
+      style.pass = NEXT_PASS[state.features.length % NEXT_PASS.length];
+      state.features.push({
+        id: state.nextId++, name: file.name.replace(/\.[^.]+$/, ""), kind: r.kind,
+        rings: r.rings, points: r.points,
+        count: r.kind === "point" ? r.points.length : r.rings.length,
+        style,
+      });
+      added.push(state.features[state.features.length - 1]);
+      for (const n of r.notes) failed.push(`${file.name}: ${n}`);
+    } catch (e) { failed.push(`${file.name}: ${e.message}`); }
+  }
+  if (added.length) state.activeFeature = state.features.length - 1;
+  const parts = added.map((f) => `<b>${esc(f.name)}</b> — ${f.count} `
+    + `${FEATURE_KIND_LABEL[f.kind]}.`);
+  // ⚠️ A CRS MISMATCH IS THE FAILURE THAT LOOKS LIKE A BROKEN TOOL. Said here,
+  // before the compile draws nothing and leaves the user guessing.
+  if (state.dem && added.length) {
+    const d = state.dem;
+    const x1 = d.originX + d.ncols * d.cell, y0 = d.originY - d.nrows * d.cell;
+    for (const f of added) {
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      const eat = (x, y) => {
+        bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x);
+        by0 = Math.min(by0, y); by1 = Math.max(by1, y);
+      };
+      for (const p of f.points) eat(p.x, p.y);
+      for (const r of f.rings) for (let i = 0; i < r.pts.length; i += 2) eat(r.pts[i], r.pts[i + 1]);
+      if (Number.isFinite(bx0)
+        && (bx1 < d.originX || bx0 > x1 || by1 < y0 || by0 > d.originY)) {
+        parts.push(`<span style="color:#a8541c">⚠️ ${esc(f.name)} does not overlap the raster `
+          + `— almost always a different CRS. Reproject it to `
+          + `${esc(d.crs || "the raster's CRS")} in QGIS.</span>`);
+      }
+    }
+  }
+  for (const m of failed) parts.push(`<span style="color:#a8541c">${esc(m)}</span>`);
+  info.innerHTML = parts.join("<br>") || "None loaded.";
+  syncFeature(); paintFeatureList(); recompile();
+});
+
+$("ftRemove").addEventListener("click", () => {
+  if (!activeFeature()) return;
+  state.features.splice(state.activeFeature, 1);
+  state.activeFeature = Math.max(0, Math.min(state.activeFeature, state.features.length - 1));
+  syncFeature(); paintFeatureList(); recompile();
+});
+for (const id of ["ftPass", "ftPattern", "ftSpacing", "ftRotation", "ftOutline",
+  "ftRadius", "ftPointFill", "ftPointSpacing", "ftLinetype", "ftScale"]) {
+  const el = $(id);
+  if (el) el.addEventListener("input", () => { gatherFeature(); paintFeatureList(); recompile(); });
+}
+
 // ── the tile boundary ───────────────────────────────────────────────────────
 // ⚠️ THE WHOLE MODEL IS COMPILED FIRST AND CUT AFTERWARDS. That order is what
 // makes tiles seamless: every pattern is anchored to the ground, so a boundary
@@ -1602,6 +1802,19 @@ wireDrop("dropClip", "fileClip", async (files) => {
   }
   try {
     const r = readShapefile(await shp.arrayBuffer(), { name: shp.name });
+    // ⚠️ THE REFUSAL LIVES HERE, NOT IN THE READER. The reader now serves two
+    // callers — this boundary, and drawn features — and only this one requires
+    // an area. Points enclose nothing, so a clip built from them would remove
+    // the entire drawing.
+    if (r.kind === "point") {
+      throw new Error(`${shp.name} holds ${r.type} shapes. A clip boundary has to enclose `
+        + `an area — points cannot. Load it under Features instead, where points are drawn `
+        + `as symbols.`);
+    }
+    if (r.kind === "line") {
+      r.notes.push(`these are polylines, not polygons — each is treated as a CLOSED ring, `
+        + `which is right for a boundary drawn as a line and wrong for an open one`);
+    }
     state.clip = { rings: r.rings, name: shp.name.replace(/\.[^.]+$/, "") };
     state.clipOn = true;
     $("clipOn").checked = true;
@@ -1889,6 +2102,10 @@ $("expReport").addEventListener("click", () => {
 // ⚠️ AFTER every handler above has been attached, and after the pass pickers
 // have been given their colour chips — the folds MOVE those nodes, so anything
 // that reaches for them by id must have run first.
+fillPatternPickers();
+syncFeature();
+paintFeatureList();
+
 foldSubsections($("propBody"));
 // The Readout sits OUTSIDE propBody — it is the panel's output rather than one
 // of its settings — so it needs its own pass, or it stays the one thing in the
