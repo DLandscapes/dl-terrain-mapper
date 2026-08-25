@@ -302,6 +302,60 @@ function paintSwatches() {
   }
 }
 
+// ── folding the sub-sections ────────────────────────────────────────────────
+// ⚠️ THE PROPERTIES PANEL GREW ELEVEN SUB-SECTIONS AND BECAME A SCROLL. Marc
+// asked for them to fold, pointing at DL-TerrainDiversity, which does exactly
+// this: `details.sub` with a `summary.subhead`, indented under a hairline spine
+// so a fold reads as INSIDE its panel rather than as the next panel. The
+// grammar below is that one, deliberately — one window family across the tools,
+// not two.
+//
+// ⚠️ THE FOLDS ARE BUILT BY MOVING THE EXISTING NODES, NEVER BY REWRITING THE
+// MARKUP. Every control in here is found by id and already carries its
+// listeners; recreating them would silently drop handlers, and the loss would
+// show up as a control that looks fine and does nothing. Moving a node keeps
+// its identity, its listeners and its id.
+//
+// The sibling tool builds its folds in HTML so they work with no script at all.
+// That is the right rule there and it does not bind here: this page IS ES
+// modules, so with scripting off there is no tool to fold.
+//
+// ⚠️ SECTIONS CARRYING LIVE STATE OPEN BY DEFAULT. A fold that hides a switched-
+// on halftone is the same failure the section badges exist to prevent.
+const OPEN_BY_DEFAULT = new Set([
+  "Terrain", "Labels", "Line style and pass", "Files", "Readout",
+]);
+function foldSubsections(root) {
+  if (!root) return;
+  const heads = [...root.children].filter((e) => e.classList && e.classList.contains("subhead"));
+  for (const head of heads) {
+    const det = document.createElement("details");
+    det.className = "sub";
+    const sum = document.createElement("summary");
+    sum.className = "subhead";
+    sum.textContent = head.textContent;
+    // The Readout head carries an inline rule that separates it from the
+    // settings above; it belongs to the fold now, not to the old heading.
+    const style = head.getAttribute("style");
+    if (style) det.setAttribute("style", style);
+    const body = document.createElement("div");
+    body.className = "sub-body";
+    let node = head.nextSibling;
+    while (node && !(node.nodeType === 1 && node.classList
+      && node.classList.contains("subhead"))) {
+      const next = node.nextSibling;
+      body.appendChild(node);
+      node = next;
+    }
+    det.appendChild(sum);
+    det.appendChild(body);
+    head.replaceWith(det);
+    det.open = OPEN_BY_DEFAULT.has(sum.textContent.trim());
+    // The panel's height changed, so the resize grip has to follow it.
+    det.addEventListener("toggle", () => setTimeout(syncGrip, 0));
+  }
+}
+
 // ── the raster list ─────────────────────────────────────────────────────────
 /** The settings the properties window is currently editing. */
 const activeLayer = () => state.layers[state.active] || null;
@@ -885,6 +939,38 @@ const ord = (n) => n === 1 ? "every line" : n === 2 ? "2nd" : n === 3 ? "3rd" : 
 // well (one pending compile at a time, which is the property that matters), and
 // leaves the tool drivable without a visible window — which is also what makes
 // it testable.
+/**
+ * EVERYTHING the compiler is given, built in ONE place.
+ *
+ * ⚠️ THIS FUNCTION EXISTS BECAUSE BUG 17 CAME BACK. That bug was `expDXF`
+ * compiling `dem: state.dem` — the primary raster only — while the preview used
+ * the layer list, so every multi-raster DXF silently held one surface. It was
+ * fixed once. Then the export handlers went on hand-building their own input
+ * object, and each new translation added to `recompile` had to be remembered in
+ * two more places. It was not: the circle grid, the hatching, the sections AND
+ * the clip boundary were all missing from every exported file, so a clipped
+ * drawing previewed clipped and exported whole, with no red boundary on it.
+ *
+ * ⚠️ THE ONE-DRAWING RULE IS NOT A CONVENTION, IT IS THIS FUNCTION. The preview
+ * and the writers must be handed the SAME input; the only permitted difference
+ * is `forExport`, which is where the licence guard bites. Anything that needs
+ * to reach the file goes here and reaches every route by construction.
+ */
+function compileInput(forExport) {
+  return {
+    layers: state.layers.filter((L) => L.on),
+    photos: state.photos,
+    regions: buildRegions(),
+    symbols: buildSymbols(),
+    hatches: buildHatches(),
+    sections: buildSections(),
+    clip: state.clipOn ? state.clip : null,
+    image: state.image,
+    sym: state.sym,
+    forExport: !!forExport,
+  };
+}
+
 let pending = 0;
 function recompile() {
   if (pending) return;
@@ -893,13 +979,7 @@ function recompile() {
     gather();
     if (!state.layers.some((L) => L.on)) { state.drawing = null; render(); badges(); return; }
     try {
-      state.drawing = compile({
-        layers: state.layers.filter((L) => L.on),
-        photos: state.photos, regions: buildRegions(), symbols: buildSymbols(),
-        hatches: buildHatches(), sections: buildSections(),
-        clip: state.clipOn ? state.clip : null,
-        image: state.image, sym: state.sym,
-      });
+      state.drawing = compile(compileInput(false));
     } catch (e) {
       state.drawing = null;
       $("readBody").innerHTML = `<div class="note warn">${esc(e.message)}</div>`;
@@ -1669,11 +1749,11 @@ const stem = () => (state.dem?.name || "terrainmapper").replace(/\.[^.]+$/, "").
 $("expDXF").addEventListener("click", () => {
   if (!state.dem) return;
   try {
-    // ⚠️ RECOMPILED WITH forExport, WHICH IS WHERE THE LICENCE GUARD BITES.
-    // The preview path deliberately does not set it, so a restricted image can
-    // be looked at and cannot be written.
-    const d = compile({ layers: state.layers.filter((L) => L.on), photos: state.photos, regions: buildRegions(), image: state.image,
-      sym: state.sym, forExport: true });
+    // ⚠️ THE SAME INPUT AS THE PREVIEW, differing only in `forExport` — which is
+    // where the licence guard bites. See compileInput: hand-building this object
+    // here is what made exports drop the circle grid, the hatching, the sections
+    // and the clip.
+    const d = compile(compileInput(true));
     const sheets = sheetsIn(d);
     for (const sh of sheets) {
       const suffix = sheets.length > 1 ? `-${sh}` : "";
@@ -1695,10 +1775,10 @@ $("expDXF").addEventListener("click", () => {
 $("expSVG").addEventListener("click", () => {
   if (!state.drawing) return;
   try {
-    // ⚠️ RECOMPILED WITH forExport, like the DXF path — the licence guard must
-    // bite on every route out, not only the one somebody remembered.
-    const d = compile({ layers: state.layers.filter((L) => L.on), photos: state.photos, regions: buildRegions(),
-      image: state.image, sym: state.sym, forExport: true });
+    // ⚠️ THE SAME INPUT AS THE PREVIEW, like the DXF path — the licence guard
+    // must bite on every route out, and every translation must reach every
+    // route. See compileInput.
+    const d = compile(compileInput(true));
     const sheets = sheetsIn(d);
     for (const sh of sheets) {
       const suffix = sheets.length > 1 ? `-${sh}` : "";
@@ -1732,6 +1812,16 @@ $("expReport").addEventListener("click", () => {
 });
 
 // ── go ──────────────────────────────────────────────────────────────────────
+// ⚠️ AFTER every handler above has been attached, and after the pass pickers
+// have been given their colour chips — the folds MOVE those nodes, so anything
+// that reaches for them by id must have run first.
+foldSubsections($("propBody"));
+// The Readout sits OUTSIDE propBody — it is the panel's output rather than one
+// of its settings — so it needs its own pass, or it stays the one thing in the
+// window that cannot be got out of the way.
+foldSubsections($("readout"));
+for (const body of document.querySelectorAll("#sidebar .sec-body")) foldSubsections(body);
+
 resize();
 syncLayer();
 paintLayers();

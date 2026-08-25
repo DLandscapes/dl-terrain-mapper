@@ -191,18 +191,24 @@ export function modulatedDash(pts, closed, duty, o = {}) {
     period = total / reps;                        // exact fit, no seam runt
   }
 
-  // Walk the whole path once, resampling it at a fine step, so a period can be
-  // filled from geometry of any vertex density. The step is a fraction of the
-  // period, never of a segment.
-  const step = Math.min(period / 8, Math.max(period / 64, 0.05));
-  /** @type {number[][]} */
+  // ⚠️ WALKED BY ARC LENGTH, KEEPING THE LINE'S OWN VERTICES — NOT RESAMPLED.
+  // This function used to march along at a fixed sub-period step and push a
+  // point at every one of them, so a dash on a DEAD STRAIGHT stretch came out
+  // with 32 control points where two say the same thing, and a 4.8 mm mark
+  // carried 40. Measured on a 100 mm line: 1,270 vertices for 51 marks.
+  //
+  // A dash is a piece of the contour, so it should be made of the contour's own
+  // points: the two ends where the pattern cuts it, plus whatever real vertices
+  // fall between. That is exactly how `dashPath` above works, and the two now
+  // walk the same way. Straight stretches cost two points; curvature costs
+  // exactly as much as the curve does and no more.
+  /** @type {Float64Array[]} */
   const pieces = [];
   /** @type {number[]} */
   let cur = [];
-  let sinceStart = 0;                             // distance into this period
-  let inkLen = -1;                                // how much of it is a mark
-  const N = closed ? n + 1 : n;
-  let carry = 0;
+  let on = false;
+  let left = 0;                      // how much of the current phase remains
+  let pendingGap = 0;                // the gap that follows this period's ink
 
   const closePiece = () => {
     if (cur.length >= 4) {
@@ -212,37 +218,51 @@ export function modulatedDash(pts, closed, duty, o = {}) {
     cur = [];
   };
 
+  // ⚠️ THE FIELD IS SAMPLED ONCE PER PERIOD, AT ITS START, and that value sizes
+  // the whole mark. Sampling repeatedly along one mark would let it be half one
+  // value and half another — a dash that measures nothing in particular.
+  const beginPeriod = (px, py) => {
+    const v = duty(px, py);
+    const f = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+    const ink = period * (minInk + (maxInk - minInk) * f);
+    if (ink <= 0) { on = false; left = period; pendingGap = 0; }
+    else if (ink >= period) { on = true; left = period; pendingGap = 0; }
+    else { on = true; left = ink; pendingGap = period - ink; }
+    cur = on ? [px, py] : [];
+  };
+
+  beginPeriod(pts[0], pts[1]);
+  const N = closed ? n + 1 : n;
   for (let k = 0; k < N - 1; k++) {
     const a = k % n, b = (k + 1) % n;
     const ax = pts[a * 2], ay = pts[a * 2 + 1];
     const bx = pts[b * 2], by = pts[b * 2 + 1];
     const segLen = Math.hypot(bx - ax, by - ay);
     if (!(segLen > 0)) continue;
-    for (let d = carry; d < segLen; d += step) {
-      const t = d / segLen;
+    let travelled = 0;
+    while (travelled < segLen - 1e-12) {
+      const adv = Math.min(left, segLen - travelled);
+      travelled += adv;
+      left -= adv;
+      if (left > 1e-12) break;                    // the phase outlives this segment
+      const t = travelled / segLen;
       const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
-      if (inkLen < 0) {
-        // ⚠️ THE FIELD IS SAMPLED ONCE PER PERIOD, AT ITS START, and that value
-        // sizes the whole mark. Sampling per micro-step instead would let a
-        // single mark be half one value and half another — a dash that is not
-        // a measurement of anything in particular.
-        const v = duty(px, py);
-        const f = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
-        inkLen = period * (minInk + (maxInk - minInk) * f);
-      }
-      if (sinceStart < inkLen) cur.push(px, py);
-      else if (cur.length) closePiece();
-      sinceStart += step;
-      if (sinceStart >= period) {
-        if (cur.length) { cur.push(px, py); closePiece(); }
-        sinceStart = 0;
-        inkLen = -1;
+      if (on) {
+        cur.push(px, py);
+        closePiece();
+        if (pendingGap > 1e-12) { on = false; left = pendingGap; pendingGap = 0; }
+        else beginPeriod(px, py);
+      } else {
+        beginPeriod(px, py);
       }
     }
-    carry = 0;
+    // ⚠️ THE SEGMENT'S END IS A REAL VERTEX OF THE CONTOUR. Kept when a mark is
+    // still running through it, so the dash follows the line's own geometry
+    // rather than a chord across it.
+    if (on && cur.length) cur.push(bx, by);
   }
   closePiece();
-  return pieces.map((p) => (p instanceof Float64Array ? p : Float64Array.from(p)));
+  return pieces;
 }
 
 /**

@@ -104,6 +104,27 @@ body {
 .dz .fine, .dz > span:not(.act) { color: var(--ink-soft); font-size: .74rem; line-height: 1.45; }
 #dropzone > .or { color: var(--ink-soft); font-size: .72rem; }
 
+/* ---------- folding sub-sections ----------
+   ⚠️ THE GRAMMAR IS DL-TerrainDiversity'S, DELIBERATELY — one window family
+   across the tool set, not two. A fold is INDENTED under a hairline spine
+   rather than ruled off, because a full-width rule made a sub-section
+   typographically identical to a top-level panel: three subs inside one
+   section then read as three more sections. An indent says "inside"; a rule
+   says "next". */
+details.sub { display: block; padding-left: 9px; border-left: 1px solid var(--line); margin-left: 1px; }
+details.sub + details.sub { margin-top: 9px; }
+details.sub > summary.subhead {
+  cursor: pointer; list-style: none; user-select: none;
+  display: block; padding: 2px 0;
+}
+details.sub > summary.subhead::-webkit-details-marker { display: none; }
+details.sub > summary.subhead::before { content: "\25B8\A0"; font-size: .68rem; color: var(--ink-soft); }
+details.sub[open] > summary.subhead::before { content: "\25BE\A0"; }
+details.sub > summary.subhead:hover { color: var(--ink); }
+/* The body spaces itself off the summary only when it is actually open, so a
+   run of closed folds sits tight and the whole panel shortens. */
+details.sub > .sub-body { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+
 #scene-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
 .row-between { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 #scene-name { font-size: .9rem; word-break: break-all; }
