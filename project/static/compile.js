@@ -667,7 +667,12 @@ export function compile(input) {
     // separately from the circles because they dominate the job: a field of
     // 1,200 hatched symbols is thousands of extra head moves, and the count has
     // to precede the file like every other count in this tool.
-    if (chords) {
+    // ⚠️ WARN WHEN IT IS HEAVY, NOT WHENEVER IT HAPPENS. This used to fire for
+    // ANY hatched circle grid, which made it a statement rather than a warning —
+    // and a warning that can never not fire trains a reader to ignore the panel
+    // that also carries the ones that matter. The stroke count is in the cutting
+    // report either way; the warning is for when the count is a problem.
+    if (chords > 2000) {
       warnings.push(`${spec.name || "circle grid"}: the hatched symbols add ${chords} fill `
         + `lines at ${fmt(hatchMM)} mm — a hatched circle is many marks, not one. `
         + `Wider fill spacing, or an outline style, brings it down.`);
