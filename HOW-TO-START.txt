@@ -1,0 +1,66 @@
+DL-TerrainMapper — how to start
+===============================
+
+THE QUICKEST WAY — no install, works on a lab machine
+
+    https://dlandscapes.github.io/dl-terrain-mapper/
+
+  Open it in Chrome, Edge or Firefox. That is the whole setup.
+
+
+FROM THIS FOLDER, ON YOUR OWN MACHINE
+
+  Double-click        start.bat
+
+  Your browser opens with the tool in it. Leave the small black console
+  window alone while you work — closing it stops the tool.
+
+  You need Python 3 installed. There is nothing to install beyond that:
+  no pip, no npm, no build step.
+
+
+*** DO NOT double-click project\index.html ***
+
+  It will open, and it will be BLANK. That is not a broken download.
+  Browsers refuse to load this kind of page straight off the disk, for a
+  security reason that has nothing to do with this tool. Use start.bat,
+  or the web link above.
+
+
+FIRST FIVE MINUTES
+
+  1. Press "or build a demonstration site from nothing".
+     A landform appears with contours on it. You need no data for this.
+
+  2. Open the "Compose" section on the left. Set your bed size, then press
+     "Pick the largest scale that fits".
+
+  3. Open the properties window on the right. Everything there applies to
+     the raster selected in the layer list. Try:
+        Hachures                 — strokes down the slope
+        Sections                 — three cuts through the plate
+        Change as circles        — a grading plan's cut and fill
+        Change as hatching       — tone, as marks
+
+  4. Read the panel under "Readout". It tells you how many separate marks
+     the drawing became. That number is your job time.
+
+  5. "Export" writes the DXF and SVG, plus a plain-text cutting report.
+
+
+YOUR FILES STAY ON YOUR COMPUTER
+
+  Nothing is uploaded, because there is nowhere to upload to. Photographs
+  in particular are read inside your own browser tab and never sent.
+
+
+AT THE MACHINE
+
+  - DLF-99_sheet is a boundary. Assign it to NO pass.
+  - Cut passes run LAST.
+  - No power or speed values ship with this tool — they belong to your
+    machine and your material. Cut the material test sheet first.
+
+
+Digital Landscapes — https://digital-landscapes.com/
+Licence: GNU GPL v3.0 or later. See LICENSE and NOTICE.md.

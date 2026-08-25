@@ -1,0 +1,1040 @@
+// @ts-check
+// THE COMPILER — features and a symbology in, one fabricable drawing out.
+//
+// This is the abstraction the whole tool is a test of. DL-TerrainSlicer's core
+// object is a contour band that becomes a solid layer. This tool's core object
+// is a FEATURE PLUS A SYMBOL THAT MAPS TO A LASER OPERATION, and everything
+// else — the readers, the tracer, the font, the DXF writer — is service to that
+// one idea. If the idea is right, a new feature type is a new `emit` block and
+// nothing else moves.
+//
+// ⚠️ ONE GEOMETRY, TWO OUTPUTS. The preview and the DXF are rendered from the
+// SAME Drawing, and neither is allowed to build its own. A preview that draws
+// what it thinks the machine will do is a preview that eventually lies, and the
+// lie is discovered on material. Everything the user sees on screen is the
+// literal content of the file, coloured by pass.
+//
+// ⚠️ EVERY PATH THAT LEAVES CARRIES A LAYER, AND THE LAYER IS THE OPERATION.
+// "Engraved", "scored", "cut" are not adjectives here — they are DLF pass
+// layers with power and speed set at the machine. The symbology's job is to
+// choose them; nothing downstream may guess.
+
+import { traceContours, niceInterval, clipToRect } from "./contours.js";
+import { sheetFor, scaleBar, northPoint } from "./sheet.js";
+import { toSheet, labelContours } from "./labels.js";
+import { textStrokes, measure, setLettering } from "./stroke-font.js";
+import { stats } from "./dem.js";
+import { markGeometry, uncertaintyMM } from "./photos.js";
+import { vectorHalftone, tripleHalftone, assertExportable, CHANNELS } from "./halftone.js";
+import { symbolLegend, symbolField, signedSymbolField, strideFor } from "./symbols.js";
+import { applyStyle, modulatedDash, LINE_STYLES, styleLabel } from "./linestyle.js";
+import { hachureLines } from "./hachures.js";
+import { traceRegions, clipRingToRect } from "./regions.js";
+import { hatchField } from "./hatch.js";
+import { cutSections } from "./sections.js";
+import { DXF } from "./dxf.js";
+
+/** The default symbology — every value the compiler needs, in one place. */
+export const DEFAULTS = {
+  // ⚠️ MARGIN 0 BY DEFAULT. The sheet outline is then cut exactly on the
+  // raster's own extent, which is what a TILED SET needs: Marc's plates abut,
+  // so any margin at all becomes a band of blank card between neighbours in the
+  // assembled model. A margin is still available and is the right choice for a
+  // single presentation sheet — it is just no longer the assumption.
+  sheet: { scale: 200, margin: 0, frame: true, scaleBar: true, north: true, title: "",
+    lettering: "regular" },
+  // ⚠️ ONE OF THESE PER RASTER, NOT ONE PER DRAWING. A sheet routinely carries
+  // more than one surface — a DTM under a DSM, or the same ground in two years —
+  // and each needs its own interval, its own line style and its own laser pass,
+  // or the reader cannot tell which line is which. `DEFAULTS.contours` is the
+  // template a newly loaded raster is given.
+  contours: {
+    enabled: true, interval: 0, indexEvery: 5, minLength: 1.5,
+    labels: true, labelEvery: 5, labelIndexOnly: false, labelSize: 2.2,
+    labelSpacing: 55, orientation: "horizontal", suffix: "",
+    datum: "absolute", datumValue: 0,
+    // ⚠️ COLOUR IS NOT DECORATION HERE — IT IS THE MACHINE OPERATION. Choosing
+    // "green" for a layer means choosing pass 2, score medium, at whatever power
+    // and speed that pass is set to. The picker shows colours because that is
+    // how the passes are identified at the machine, not because it is a palette.
+    style: "solid", indexStyle: "solid",
+    customDash: null, indexCustomDash: null,
+    pass: "DLF-02_score_medium", indexPass: "DLF-03_score_strong",
+    labelPass: "DLF-01_score_light",
+  },
+  photos: {
+    enabled: true, mark: "circle", size: 3, numbers: true, numberSize: 2.2,
+    bearing: true, halo: false, haloMetres: 7,
+  },
+  halftone: {
+    enabled: false, mode: "vector", across: 90, channel: "darkness",
+    channels: ["greenness", "brightness", "saturation"],
+  },
+  legend: true,
+};
+
+/** Layer choices, gathered so the mapping is visible in one screenful. */
+export const OPERATIONS = {
+  contourIntermediate: "DLF-02_score_medium",
+  contourIndex: "DLF-03_score_strong",
+  contourLabel: "DLF-01_score_light",
+  photoMark: "DLF-04_cut_inner",
+  photoNumber: "DLF-01_score_light",
+  photoBearing: "DLF-02_score_medium",
+  photoHalo: "DLF-00_engrave",
+  halftone: "DLF-00_engrave",
+  halftoneB: "DLF-02_score_medium",
+  halftoneC: "DLF-03_score_strong",
+  furniture: "DLF-01_score_light",
+  sheetFrame: "DLF-05_cut_outer",
+  sheetBounds: "DLF-99_sheet",
+};
+
+/**
+ * @typedef {object} Drawing
+ * @property {{pts:Float64Array|number[], layer:string, closed:boolean}[]} paths
+ * @property {{cx:number, cy:number, r:number, layer:string}[]} circles
+ * @property {import("./sheet.js").Sheet} sheet
+ * @property {object} report
+ * @property {string[]} warnings
+ */
+
+/**
+ * Compile a drawing.
+ *
+ * @param {{dem:import("./dem.js").DEM,
+ *          photos?:import("./photos.js").PhotoPoint[],
+ *          image?:import("./halftone.js").ImageSource|null,
+ *          sym?:object, forExport?:boolean}} input
+ * @returns {Drawing}
+ */
+export function compile(input) {
+  const sym = merge(DEFAULTS, input.sym || {});
+  // ⚠️ ONE RASTER AND MANY ARE THE SAME CALL. `{dem}` is normalised into a
+  // single-layer list here, so every caller and every existing test keeps
+  // working and the body below only ever has one shape to handle.
+  const layers = input.layers && input.layers.length
+    ? input.layers
+    : [{ dem: input.dem, name: input.dem?.name, contours: sym.contours }];
+  const dem = layers[0].dem;
+  if (!dem) throw new Error("compile needs at least one raster");
+  // ⚠️ THE LETTERING IS SET BEFORE THE FIRST GLYPH AND HOLDS FOR THE WHOLE
+  // COMPILE — labels, region numbers, furniture, all of it, one voice. Every
+  // style is an affine dress on the same single-stroke skeleton; see
+  // stroke-font.js for why a real second typeface is not on offer.
+  setLettering(sym.sheet.lettering);
+  const warnings = [];
+  const paths = [];
+  const circles = [];
+  // ⚠️ EVERY ENTITY CAN NAME ITS SHEET — the physical piece of material it is
+  // cut from. Undefined means "surface", the base board, so nothing that
+  // existed before two-material drawings has to change. The writers filter on
+  // it; one Drawing, several files, one per sheet of material on the bed.
+  const add = (pts, layer, closed = false, sheet) => {
+    if (pts && pts.length >= 4) paths.push({ pts, layer, closed, sheet });
+  };
+
+  const sheet = sheetFor(dem, { scale: sym.sheet.scale, margin: sym.sheet.margin });
+  const s = stats(dem);
+  const interval = sym.contours.interval > 0
+    ? sym.contours.interval
+    : niceInterval(s.relief, 14);
+
+  // ── the halftone goes down FIRST ─────────────────────────────────────────
+  // ⚠️ ORDER IN THE FILE IS ORDER AT THE MACHINE for front-ends that do not
+  // sort by layer, and an engraved field under line work is the right sequence:
+  // engrave the ground, then score the lines over it, then cut. Reversed, the
+  // engraver's smoke and debris settle across finished score lines.
+  let halftoneReport = null;
+  if (sym.halftone.enabled && input.image) {
+    if (input.forExport) assertExportable(input.image);
+    const img = input.image;
+    // The image is placed in MAP units, so it lands where the terrain says
+    // rather than where the pixels happen to start.
+    const put = (sy) => {
+      for (const t of sy) {
+        const r = sheet.L(t.r);
+        if (r > 0.05) circles.push({ cx: sheet.X(t.x), cy: sheet.Y(t.y), r, layer: OPERATIONS.halftone });
+      }
+    };
+    if (sym.halftone.mode === "triple") {
+      const t = tripleHalftone(img, { across: sym.halftone.across, channels: sym.halftone.channels });
+      const passes = [OPERATIONS.halftone, OPERATIONS.halftoneB, OPERATIONS.halftoneC];
+      t.layers.forEach((L, i) => {
+        for (const q of L.symbols) {
+          const r = sheet.L(q.r);
+          if (r > 0.05) circles.push({ cx: sheet.X(q.x), cy: sheet.Y(q.y), r, layer: passes[i] });
+        }
+        if (!L.recommended) {
+          warnings.push(`Halftone channel "${L.label}" is a raw sensor band — it engraves `
+            + `correctly but a reader cannot recover a landscape quantity from its radius.`);
+        }
+      });
+      halftoneReport = { mode: "triple", marks: t.budget.marks, verdict: t.budget.verdict,
+        channels: t.layers.map((L) => L.label) };
+      if (!t.budget.ok) warnings.push(`Halftone: ${t.budget.marks} marks — ${t.budget.verdict}.`);
+    } else {
+      const t = vectorHalftone(img, { across: sym.halftone.across, channel: sym.halftone.channel });
+      put(t.symbols);
+      const def = CHANNELS[t.channel];
+      halftoneReport = { mode: "vector", marks: t.symbols.length, verdict: t.budget.verdict,
+        channels: [def ? def.label : t.channel] };
+      if (!t.budget.ok) warnings.push(`Halftone: ${t.symbols.length} marks — ${t.budget.verdict}.`);
+      if (def && !def.good) {
+        warnings.push(`Halftone channel "${def.label}" is a raw sensor band — prefer a derived channel.`);
+      }
+    }
+    if (input.image.licence === "restricted") {
+      warnings.push(`The image is licence-restricted: it can be previewed, and export is blocked.`);
+    }
+  }
+
+  // ── contours, once per raster ────────────────────────────────────────────
+  // ⚠️ EVERY LAYER IS DRAWN IN THE SAME MAP FRAME AND CLIPPED TO THE SHEET.
+  // The sheet is defined by the FIRST raster — the primary — and the others
+  // land wherever their own georeferencing puts them. That is the honest
+  // behaviour: a 2 x 2 km context tile dropped beside a 54 m plate does not
+  // resize the plate, it simply runs off the edge and is trimmed. Sizing the
+  // sheet to the union instead would silently turn a plate into a wall map.
+  const contourReports = [];
+  for (const layer of layers) {
+    const c = { ...DEFAULTS.contours, ...(layer.contours || {}) };
+    if (!c.enabled) continue;
+    const ls = stats(layer.dem);
+    const iv = c.interval > 0 ? c.interval : niceInterval(ls.relief, 14);
+    const datumShift = c.datum === "local" ? (c.datumValue || ls.min) : 0;
+    const traced = traceContours(layer.dem, iv, {
+      indexEvery: c.indexEvery,
+      minLength: c.minLength / sheet.mmPerUnit,
+    });
+    let inMM = traced.map((l) => toSheet(l, sheet));
+    // The label reads the datum, the geometry does not move.
+    if (datumShift) inMM = inMM.map((l) => ({ ...l, level: l.level - datumShift }));
+    let labels = [];
+    let placed = 0;
+    if (c.labels) {
+      const r = labelContours(inMM, {
+        interval: iv, every: c.labelEvery, indexOnly: c.labelIndexOnly,
+        size: c.labelSize, spacing: c.labelSpacing,
+        orientation: c.orientation, suffix: c.suffix,
+      });
+      inMM = r.lines; labels = r.labels; placed = r.placed;
+    }
+    // ⚠️ DASH AFTER LABELLING, NEVER BEFORE. The labeller cuts a gap in a line
+    // and heals closed rings across their seam; handed a line already broken
+    // into 200 dashes it would place a label in a gap that is not there and
+    // reason about closedness that no longer exists.
+    const emit = (want, style, pass, custom) => {
+      const picked = inMM.filter((l) => l.index === want);
+      if (!picked.length) return { after: 0, before: 0, verdict: "continuous", shortest: 0 };
+      const r = applyStyle(picked, style, custom);
+      for (const piece of r.paths) {
+        for (const part of clipToSheet(piece, false, sheet)) add(part.pts, pass, false);
+      }
+      return r;
+    };
+    // ⚠️ MODULATION REPLACES THE NAMED STYLE, IT DOES NOT STACK WITH IT. Two
+    // dash patterns cut into one line leave a stutter that is neither pattern
+    // and measures nothing. When a layer modulates, the style picker's job is
+    // done by the field instead, and the report says so.
+    const mod = c.modulate;
+    const modDem = mod && mod.dem ? mod.dem : null;
+    let modReport = null;
+    if (modDem) {
+      const ms = stats(modDem);
+      const mlo = Number.isFinite(mod.lo) ? mod.lo : ms.min;
+      const mhi = Number.isFinite(mod.hi) ? mod.hi : ms.max;
+      const mspan = mhi - mlo;
+      // Sheet mm back to the modulating raster's own grid, once per mark.
+      const duty = (mx, my) => {
+        const X = dem.originX + (mx - sheet.margin) / sheet.mmPerUnit;
+        const Y = (dem.originY - dem.nrows * dem.cell) + (my - sheet.margin) / sheet.mmPerUnit;
+        const col = Math.floor((X - modDem.originX) / modDem.cell);
+        const row = Math.floor((modDem.originY - Y) / modDem.cell);
+        if (col < 0 || row < 0 || col >= modDem.ncols || row >= modDem.nrows) return NaN;
+        const v = modDem.z[row * modDem.ncols + col];
+        if (!Number.isFinite(v)) return NaN;
+        let t = mspan > 0 ? (v - mlo) / mspan : 1;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        return mod.invert ? 1 - t : t;
+      };
+      let marks = 0;
+      for (const l of inMM) {
+        for (const piece of modulatedDash(l.pts, l.closed, duty, {
+          period: mod.period > 0 ? mod.period : 2,
+          minInk: (mod.minInk ?? 5) / 100,
+          maxInk: (mod.maxInk ?? 100) / 100,
+        })) {
+          for (const part of clipToSheet(piece, false, sheet)) {
+            add(part.pts, l.index ? c.indexPass : c.pass);
+            marks++;
+          }
+        }
+      }
+      modReport = { name: mod.name || modDem.name || "field", marks,
+        period: mod.period > 0 ? mod.period : 2,
+        minInk: mod.minInk ?? 5, maxInk: mod.maxInk ?? 100,
+        invert: !!mod.invert, lo: +(+mlo).toFixed(2), hi: +(+mhi).toFixed(2) };
+      if (marks > 6000) {
+        warnings.push(`${layer.name || "raster"}: a modulated contour became ${marks} separate `
+          + `marks — every one is a head move. A longer period brings it down.`);
+      }
+      if (!marks) {
+        warnings.push(`${layer.name || "raster"}: the modulating field left every contour bare — `
+          + `check that it overlaps this raster and holds measured values.`);
+      }
+    }
+    const mid = modDem ? { after: 0, before: 0, verdict: "modulated", shortest: 0 }
+      : emit(false, c.style, c.pass, c.customDash);
+    const idx = modDem ? { after: 0, before: 0, verdict: "modulated", shortest: 0 }
+      : emit(true, c.indexStyle, c.indexPass, c.indexCustomDash);
+
+    // ── hachures: strokes down the fall line, hung off these contours ──────
+    // ⚠️ HUNG OFF THE CONTOURS THAT WERE ACTUALLY TRACED, in MAP units, before
+    // the sheet transform — so the fall line is sampled in the frame the DEM
+    // lives in and no scale factor can creep into a gradient.
+    let hachureReport = null;
+    if (c.hachures && c.hachures.enabled) {
+      const hc = c.hachures;
+      const pick = hc.indexOnly ? traced.filter((l) => l.index) : traced;
+      const h = hachureLines(layer.dem, pick, {
+        spacing: (hc.spacingMM ?? 3) / sheet.mmPerUnit,
+        maxLength: (hc.maxMM ?? 2.5) / sheet.mmPerUnit,
+        minLength: (hc.minMM ?? 0.9) / sheet.mmPerUnit,
+        fixed: !!hc.fixed,
+        uphill: !!hc.uphill,
+        minSlope: hc.minSlope > 0 ? Math.tan((hc.minSlope * Math.PI) / 180) : 0,
+      });
+      let drawn = 0;
+      for (const t of h.ticks) {
+        const mm = Float64Array.of(sheet.X(t[0]), sheet.Y(t[1]), sheet.X(t[2]), sheet.Y(t[3]));
+        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, hc.pass || c.pass); drawn++; }
+      }
+      hachureReport = { drawn, skipped: h.skipped,
+        spacingMM: hc.spacingMM ?? 3, minMM: hc.minMM ?? 0.9, maxMM: hc.maxMM ?? 2.5,
+        fixed: !!hc.fixed, uphill: !!hc.uphill, indexOnly: !!hc.indexOnly,
+        pass: hc.pass || c.pass,
+        loDeg: +((Math.atan(h.loSlope) * 180) / Math.PI).toFixed(1),
+        hiDeg: +((Math.atan(h.hiSlope) * 180) / Math.PI).toFixed(1) };
+      // ⚠️ EVERY TICK IS A SEPARATE HEAD MOVE. A hachured drawing is the
+      // densest thing this tool can emit, and the count must precede the file.
+      if (drawn > 6000) {
+        warnings.push(`${layer.name || "raster"}: ${drawn} hachures is a very heavy job — `
+          + `every tick is a separate head move. Wider spacing, or index contours only.`);
+      }
+      if (!drawn) {
+        warnings.push(`${layer.name || "raster"}: no hachures were drawn — the ground may be `
+          + `flatter than the minimum slope, or the contours too short to carry a tick.`);
+      }
+      if (hc.uphill) {
+        warnings.push(`${layer.name || "raster"}: hachures are pointing UPHILL. That is the `
+          + `opposite of the convention — a reader will see hollows where there are hills.`);
+      }
+    }
+    for (const st of labels) {
+      for (const part of clipToSheet(st, false, sheet)) add(part.pts, c.labelPass, false);
+    }
+
+    const styleName = (k, custom) => styleLabel(k, custom);
+    contourReports.push({
+      name: layer.name || layer.dem.name || "raster",
+      interval: iv, levels: new Set(traced.map((l) => l.level)).size,
+      paths: traced.length, points: traced.reduce((a, l) => a + l.pts.length / 2, 0),
+      labels: placed,
+      datum: datumShift ? `local, ${datumShift.toFixed(2)} m subtracted` : "absolute",
+      style: modDem ? `modulated by ${modReport.name}` : styleName(c.style, c.customDash),
+      indexStyle: modDem ? `modulated` : styleName(c.indexStyle, c.indexCustomDash),
+      pass: c.pass, indexPass: c.indexPass,
+      modulation: modReport, hachures: hachureReport,
+      drawn: modDem ? modReport.marks : mid.after + idx.after,
+      verdict: mid.verdict === "continuous" && idx.verdict === "continuous"
+        ? "continuous" : (mid.after + idx.after > 6000 ? "very heavy" : mid.verdict),
+    });
+    if (!traced.length) {
+      warnings.push(`${layer.name || "raster"}: no contours at ${fmt(iv)} m — check the `
+        + `interval against the relief.`);
+    }
+    // ⚠️ THE DASH COUNT IS STATED BEFORE THE FILE IS WRITTEN, NOT AFTER.
+    const dashed = mid.after + idx.after;
+    if ((c.style !== "solid" || c.indexStyle !== "solid") && dashed > 1500) {
+      warnings.push(`${layer.name || "raster"}: a dashed style turned ${traced.length} `
+        + `continuous paths into ${dashed} separate marks — ${mid.verdict}.`);
+    }
+  }
+  const contourReport = contourReports.length === 1 ? contourReports[0] : null;
+
+  // ── photographs ──────────────────────────────────────────────────────────
+  let photoReport = null;
+  const photos = (input.photos || []).filter((p) => p.include);
+  if (sym.photos.enabled && photos.length) {
+    const halo = sym.photos.halo ? uncertaintyMM(sheet, sym.photos.haloMetres) : 0;
+    for (const p of photos) {
+      const cx = sheet.X(p.X), cy = sheet.Y(p.Y);
+      const g = markGeometry(cx, cy, {
+        mark: sym.photos.mark, size: sym.photos.size,
+        bearing: sym.photos.bearing && p.meta.direction !== undefined ? p.meta.direction : undefined,
+        halo: halo || undefined,
+      });
+      for (const q of g.paths) add(q, OPERATIONS.photoMark);
+      for (const c of g.circles) {
+        circles.push({ cx: c.cx, cy: c.cy, r: c.r,
+          layer: halo && Math.abs(c.r - halo) < 1e-9 ? OPERATIONS.photoHalo : OPERATIONS.photoMark });
+      }
+      if (sym.photos.numbers) {
+        const off = sym.photos.size * 0.75 + sym.photos.numberSize * 0.4;
+        for (const st of textStrokes(String(p.n), {
+          x: cx + off, y: cy + off, size: sym.photos.numberSize,
+          anchor: "start", baseline: "middle", tracking: 6,
+        })) add(st, OPERATIONS.photoNumber);
+      }
+    }
+    const corrected = photos.filter((p) => p.dx || p.dy).length;
+    photoReport = {
+      drawn: photos.length, corrected,
+      uncertaintyMM: +uncertaintyMM(sheet, sym.photos.haloMetres).toFixed(1),
+      withBearing: photos.filter((p) => p.meta.direction !== undefined).length,
+    };
+    if (corrected < photos.length) {
+      warnings.push(`${photos.length - corrected} photograph${photos.length - corrected === 1 ? "" : "s"} `
+        + `still sit at the raw GPS position — at 1:${sym.sheet.scale} the fix is worth about `
+        + `±${photoReport.uncertaintyMM} mm on this sheet, so check them against the terrain.`);
+    }
+  }
+
+  // ── regions: one threshold, a second material ────────────────────────────
+  // Marc's framing, verbatim: "the second material's outline should come from
+  // one threshold — patches that are higher in a certain value than other
+  // patches — these values could be the disturbance values." Two constructions,
+  // from DESIGN-two-materials.md:
+  //
+  //   window  — the region is CUT OUT of the surface sheet. A void; the backing
+  //             shows through. The honest form of removed ground.
+  //   overlay — the region is cut from a SECOND sheet of material and glued on,
+  //             standing proud by its thickness. The honest form of added
+  //             ground, or of anything that stands above it (an nDSM).
+  //
+  // ⚠️ THE PIECE CARRIES ITS OWN NUMBER. Each region's mean value is engraved at
+  // its deepest cell. On an overlay that lands on the glued piece; on a window
+  // it lands on the OFFCUT — deliberately, because the offcut of a cut region
+  // is the removed earth, and a dropped piece that says how deep it was is
+  // worth keeping. A shape without a quantity is a picture.
+  const regionReports = [];
+  for (const spec of (input.regions || [])) {
+    if (!spec || !spec.dem || !(spec.threshold > 0 || spec.threshold < 0 || spec.threshold === 0)) continue;
+    const mode = spec.mode === "window" ? "window" : "overlay";
+    const pass = spec.pass || OPERATIONS.photoMark;          // cut inner
+    const matSheet = mode === "overlay" ? (spec.sheet || "material") : undefined;
+    const t = traceRegions(spec.dem, spec.threshold, { minAreaM2: spec.minAreaM2 ?? 0 });
+    const sheetRect = { x0: 0, y0: 0, x1: sheet.width, y1: sheet.height };
+    let drawn = 0;
+    for (const ring of t.rings) {
+      // map units → sheet mm, then clipped CLOSED to the sheet — a region from
+      // a raster larger than the primary must not send cuts off the material.
+      const mm = new Float64Array(ring.pts.length);
+      for (let i = 0; i < ring.pts.length; i += 2) {
+        mm[i] = sheet.X(ring.pts[i]);
+        mm[i + 1] = sheet.Y(ring.pts[i + 1]);
+      }
+      const clipped = clipRingToRect(mm, sheetRect);
+      if (!clipped) continue;
+      if (mode === "overlay") {
+        add(clipped, pass, true, matSheet);
+        // ⚠️ THE PLACEMENT GUIDE IS A SCORE ON THE SURFACE, NOT A CUT. The same
+        // outline, light, so the piece has a drawn home to be glued into. The
+        // pieces are cut at the SAME coordinates they land at, so one pair of
+        // registration pins lays the material sheet over the surface and every
+        // piece is already above its place.
+        if (spec.guide !== false) add(clipped, OPERATIONS.contourLabel, true);
+      } else {
+        add(clipped, pass, true);
+      }
+      drawn++;
+    }
+    if (spec.labels !== false) {
+      const size = spec.labelSize || 2.2;
+      for (const g of t.regions) {
+        const v = Math.abs(g.mean);
+        const text = v >= 10 ? v.toFixed(0) : v.toFixed(1);
+        for (const st of textStrokes(text, {
+          x: sheet.X(g.labelX), y: sheet.Y(g.labelY), size,
+          anchor: "middle", baseline: "middle", tracking: 6,
+        })) {
+          for (const part of clipToSheet(st, false, sheet)) {
+            add(part.pts, OPERATIONS.contourLabel, false, matSheet);
+          }
+        }
+      }
+    }
+    regionReports.push({
+      name: spec.name || spec.dem.name || "regions",
+      mode, threshold: spec.threshold, pass,
+      sheet: matSheet || "surface",
+      count: t.regions.length, rings: drawn,
+      totalAreaM2: +t.totalAreaM2.toFixed(1),
+      mean: t.regions.length
+        ? +(t.regions.reduce((a, g) => a + g.mean * g.cells, 0)
+            / t.regions.reduce((a, g) => a + g.cells, 0)).toFixed(2)
+        : 0,
+    });
+    if (!t.regions.length) {
+      warnings.push(`${spec.name || "regions"}: nothing exceeds ${fmt(spec.threshold)} — `
+        + `no region to cut. Check the threshold against the values.`);
+    }
+    if (mode === "window" && t.regions.length) {
+      warnings.push(`${spec.name || "regions"}: ${drawn} window ring${drawn === 1 ? "" : "s"} `
+        + `CUT THROUGH the surface sheet. Line work inside them leaves with the offcut, and `
+        + `each offcut carries its depth — it is the removed earth, worth keeping.`);
+    }
+  }
+
+  // ── the circle grid: change drawn as a grading plan ──────────────────────
+  // Marc's ask, 2026-08-24, near-verbatim: "a grid of circles where the max
+  // and min value of the radius can be controlled with a multiplier of the
+  // normalised values … differentiated if they were + or −, fill or cut —
+  // make visible the changes over the years, like a grading plan."
+  //
+  // ⚠️ THE SIGN IS THE PASS, AND THE PASS IS THE FORM. Everywhere this tool
+  // draws a circle, the engrave pass is a FILLED dot and a score pass is an
+  // OPEN ring — preview, SVG and machine agree because that rule lives in the
+  // writers, not here. So fill-against-cut needs no new geometry at all:
+  // added ground lands on the engrave pass as a solid mark, removed ground on
+  // a score pass as a ring, and both are read against one scale because the
+  // normalisation runs over |value| once (see signedSymbolField).
+  const symbolReports = [];
+  for (const spec of (input.symbols || [])) {
+    if (!spec || !spec.dem) continue;
+    const sd = spec.dem;
+    const frame = { nrows: sd.nrows, ncols: sd.ncols, cell: sd.cell,
+      originX: sd.originX, originY: sd.originY };
+    const stride = Math.max(1, Math.round(spec.stride
+      || strideFor(sd.nrows, sd.ncols, spec.across || 40)));
+    const minF = spec.minFraction ?? 0.12;
+    const maxF = spec.maxFraction ?? 0.9;
+    const passPlus = spec.passPlus || OPERATIONS.halftone;              // engrave — filled
+    const passMinus = spec.passMinus || OPERATIONS.contourIntermediate; // score — a ring
+    // ⚠️ A CIRCLE IS ON THE SHEET OR IT IS NOT DRAWN. A polyline crossing the
+    // edge is clipped to the part that fits; a circle entity cannot be — an
+    // arc of a value-circle would read as a smaller value. One that would
+    // cross the sheet edge is dropped whole, and the report counts the drops.
+    let dropped = 0;
+    const putC = (sy, layer) => {
+      let n2 = 0;
+      for (const q of sy) {
+        const cx = sheet.X(q.x), cy = sheet.Y(q.y), r = sheet.L(q.r);
+        if (r <= 0.05) continue;
+        if (cx - r < 0 || cx + r > sheet.width || cy - r < 0 || cy + r > sheet.height) {
+          dropped++; continue;
+        }
+        circles.push({ cx, cy, r, layer });
+        n2++;
+      }
+      return n2;
+    };
+    let plusN = 0, minusN = 0, lo = 0, hi = 0;
+    if (spec.signed !== false) {
+      const f = signedSymbolField(sd.z, frame,
+        { stride, minFraction: minF, maxFraction: maxF, minAbs: spec.minAbs || 0 });
+      plusN = putC(f.plus, passPlus);
+      minusN = putC(f.minus, passMinus);
+      hi = f.hi;
+    } else {
+      // Unsigned: one set on the fill pass, the plain lo..hi mapping.
+      const st2 = stats(sd);
+      lo = st2.min; hi = st2.max;
+      plusN = putC(symbolField(sd.z, frame,
+        { stride, minFraction: minF, maxFraction: maxF }), passPlus);
+    }
+    const count = plusN + minusN;
+    const fullMM = sheet.L((stride * sd.cell * maxF) / 2);
+    const signed = spec.signed !== false;
+
+    // The legend — reference circles at round values, top of the furniture
+    // zone at the right, drawn on the FILL pass so they read exactly as the
+    // field does. Skipped rather than squeezed when the sheet has no room.
+    if (sym.legend && spec.legend !== false && count && hi > lo) {
+      const leg = symbolLegend(lo, hi, { stride, cell: sd.cell,
+        minFraction: minF, maxFraction: maxF, count: 3 }).filter((e) => e.v !== 0);
+      const margin = sym.sheet.margin;
+      const rMax = Math.max(...leg.map((e) => sheet.L(e.r)), 0);
+      const gap = 6;
+      const wAll = leg.reduce((a, e) => a + 2 * sheet.L(e.r) + gap, 0);
+      let lx = sheet.width - Math.max(margin, 4) - 12 - wAll;
+      const ly = Math.max(margin * 0.25, 3) + rMax;
+      if (lx > 4 && ly + rMax < sheet.height) {
+        for (const e of leg) {
+          const r2 = sheet.L(e.r);
+          lx += r2;
+          circles.push({ cx: lx, cy: ly, r: r2, layer: passPlus });
+          const v2 = Math.abs(e.v);
+          for (const st of textStrokes(String(v2 >= 10 ? v2.toFixed(0) : +v2.toFixed(2)), {
+            x: lx, y: ly + rMax + 2.6, size: 1.8,
+            anchor: "middle", baseline: "middle", tracking: 6,
+          })) add(st, OPERATIONS.furniture);
+          lx += r2 + gap;
+        }
+      }
+    }
+
+    symbolReports.push({
+      name: spec.name || sd.name || "circle grid",
+      signed, count, plus: plusN, minus: minusN, dropped,
+      hi: +hi.toFixed(2), lo: +lo.toFixed(2),
+      spacingM: +(stride * sd.cell).toFixed(2),
+      largestMM: +(2 * fullMM).toFixed(1),                     // diameters — the
+      smallestMM: +(2 * fullMM * minF).toFixed(1),             // coupon reads Ø
+      passPlus, passMinus: signed ? passMinus : null,
+    });
+    if (!count) {
+      warnings.push(`${spec.name || "circle grid"}: no circles — every value is zero, `
+        + `unmeasured, or under the ${fmt(spec.minAbs || 0)} dead zone.`);
+    }
+    if (signed && count && passPlus === passMinus) {
+      warnings.push(`${spec.name || "circle grid"}: fill and cut are on the SAME pass — `
+        + `on the sheet the two directions of change will be indistinguishable.`);
+    }
+    const cutPass = (p) => p === "DLF-04_cut_inner" || p === "DLF-05_cut_outer";
+    if ((plusN && cutPass(passPlus)) || (minusN && cutPass(passMinus))) {
+      warnings.push(`${spec.name || "circle grid"}: circles on a CUT pass cut discs out of `
+        + `the sheet — ${count} of them. Deliberate perforation is legitimate; anything else `
+        + `wants a score or engrave pass.`);
+    }
+    if (count > 4000) {
+      warnings.push(`${spec.name || "circle grid"}: ${count} circles is a heavy job — `
+        + `fewer circles across, or a dead zone, brings it down.`);
+    }
+  }
+
+  // ── hatching: the value as line density ──────────────────────────────────
+  // The third translation (Marc, 2026-08-24): contours put the value in a
+  // line's POSITION, the circle grid puts it in a symbol's SIZE, a hatch puts
+  // it in the DENSITY of ink along parallel scanlines — solid where strong,
+  // breaking into dashes as it weakens, bare paper where there is nothing.
+  // The natural read for a surface with no meaningful contour: slope, a
+  // wetness index, a probability.
+  const hatchReports = [];
+  for (const spec of (input.hatches || [])) {
+    if (!spec || !spec.dem) continue;
+    const hd = spec.dem;
+    const pass = spec.pass || OPERATIONS.contourLabel;         // score light
+    const spacingMM = spec.spacingMM > 0 ? spec.spacingMM : 2;
+    const f = hatchField(hd, {
+      spacing: spacingMM / sheet.mmPerUnit,
+      angleDeg: spec.angleDeg ?? 45,
+      invert: !!spec.invert,
+      floor: spec.floor,
+      // ⚠️ 0.3 mm ON THE SHEET is the runt floor until the coupon says better —
+      // the same failure class as the dash-ring runt: a shorter mark is a
+      // near-stationary burn.
+      minMark: 0.3 / sheet.mmPerUnit,
+    });
+    let drawn = 0;
+    for (const p of f.paths) {
+      const mm = Float64Array.of(sheet.X(p[0]), sheet.Y(p[1]), sheet.X(p[2]), sheet.Y(p[3]));
+      for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass); drawn++; }
+    }
+    hatchReports.push({
+      name: spec.name || hd.name || "hatch",
+      marks: drawn, lines: f.lines, spacingMM,
+      angle: spec.angleDeg ?? 45, invert: !!spec.invert,
+      lo: +f.lo.toFixed(2), hi: +f.hi.toFixed(2), pass,
+    });
+    if (!drawn) {
+      warnings.push(`${spec.name || "hatch"}: no marks — every value is unmeasured, under `
+        + `the floor, or the density rounds below the 0.3 mm minimum mark.`);
+    }
+    if (pass === "DLF-04_cut_inner" || pass === "DLF-05_cut_outer") {
+      warnings.push(`${spec.name || "hatch"}: hatching on a CUT pass cuts ${drawn} slits `
+        + `through the sheet. Deliberate screening is legitimate; tone wants a score or `
+        + `engrave pass.`);
+    }
+    if (drawn > 6000) {
+      warnings.push(`${spec.name || "hatch"}: ${drawn} separate marks is a very heavy job — `
+        + `every dash is a pierce. Wider spacing, or a floor, brings it down.`);
+    }
+  }
+
+  // ── sections: the ground cut open ────────────────────────────────────────
+  // Marc, 2026-08-24: "three sections always running horizontally through the
+  // centre of the plate." Three cuts at 0.25 / 0.50 / 0.75 put one exactly on
+  // the centre line; the profile is engraved along the cut it was taken from,
+  // because a zero margin leaves nowhere to stack it (see sections.js).
+  const sectionReports = [];
+  for (const spec of (input.sections || [])) {
+    if (!spec || !spec.dem) continue;
+    const sdem = spec.dem;
+    const pass = spec.pass || OPERATIONS.contourIndex;
+    const linePass = spec.linePass || OPERATIONS.contourLabel;
+    const heightMM = spec.heightMM > 0 ? spec.heightMM : 12;
+    const cut = cutSections(sdem, {
+      count: spec.count ?? 3,
+      axis: spec.axis === "vertical" ? "vertical" : "horizontal",
+      datum: spec.datum === "shared" ? "shared" : "own",
+      heightUnits: heightMM / sheet.mmPerUnit,
+    });
+    let drawn = 0, gaps = 0;
+    for (const S of cut.sections) {
+      // The cut line itself — light, so the profile reads above it and the
+      // line stays a datum rather than competing with the ground.
+      const ln = Float64Array.of(sheet.X(S.line[0]), sheet.Y(S.line[1]),
+                                 sheet.X(S.line[2]), sheet.Y(S.line[3]));
+      for (const part of clipToSheet(ln, false, sheet)) add(part.pts, linePass);
+      for (const p of S.profile) {
+        const mm = new Float64Array(p.length);
+        for (let i = 0; i < p.length; i += 2) {
+          mm[i] = sheet.X(p[i]);
+          mm[i + 1] = sheet.Y(p[i + 1]);
+        }
+        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass); drawn++; }
+      }
+      gaps += S.gaps;
+      // ⚠️ THE END TICKS NAME THE CUT, A–A′, and they are the reason a section
+      // is readable at all: a line across a plan with no name is not a section,
+      // it is a scratch. The prime is set as a full stop after the letter —
+      // the font has no prime glyph and inventing one as a bare stroke would
+      // be a pierce with no travel.
+      if (spec.labels !== false) {
+        const size = spec.labelSize || 2.4;
+        const ends = [[S.line[0], S.line[1], "start"], [S.line[2], S.line[3], "end"]];
+        for (const [mx, my, which] of ends) {
+          const x0 = sheet.X(mx), y0 = sheet.Y(my);
+          const inset = which === "start" ? size * 0.7 : -size * 0.7;
+          for (const st of textStrokes(which === "start" ? S.label : S.label + ".", {
+            x: x0 + inset, y: y0 + size * 0.9, size,
+            anchor: which === "start" ? "start" : "end",
+            baseline: "middle", tracking: 6,
+          })) {
+            for (const part of clipToSheet(st, false, sheet)) add(part.pts, linePass);
+          }
+        }
+      }
+    }
+    const exag = cut.sections.length
+      ? +(cut.sections.reduce((a, S) => a + S.exaggeration, 0) / cut.sections.length).toFixed(1)
+      : 0;
+    sectionReports.push({
+      name: spec.name || sdem.name || "sections",
+      count: cut.sections.length, axis: spec.axis === "vertical" ? "vertical" : "horizontal",
+      heightMM, exaggeration: exag, datum: cut.shared ? "shared" : "own",
+      paths: drawn, gaps, pass, linePass,
+      labels: cut.sections.map((S) => S.label).join(", "),
+    });
+    // ⚠️ THE EXAGGERATION IS STATED, ALWAYS, AND IN THE RIGHT DIRECTION. A
+    // section that does not say how much it stretches the vertical misreports
+    // every slope on it. ⚠️ AND A FACTOR BELOW 1 IS NOT AN EXAGGERATION — it
+    // is a COMPRESSION, and calling it the other thing would be the drawing
+    // lying about which way it distorts. The height that fits a plate at
+    // 1:1000 routinely lands under 1, so this is the common case, not an edge.
+    if (cut.sections.length) {
+      const datumNote = cut.shared
+        ? ", on one shared datum so the cuts compare"
+        : ", each on its own datum";
+      warnings.push(exag >= 1
+        ? `${spec.name || "sections"}: ${cut.sections.length} profiles at ${heightMM} mm — `
+          + `the vertical is EXAGGERATED about ×${exag}${datumNote}. State it on the drawing.`
+        : `${spec.name || "sections"}: ${cut.sections.length} profiles at ${heightMM} mm — the `
+          + `vertical is COMPRESSED to about ×${exag}, so every slope reads SHALLOWER than it `
+          + `is${datumNote}. Give the profiles more height to exaggerate instead, and state `
+          + `the factor on the drawing either way.`);
+    }
+    // ⚠️ A PROFILE THAT REACHES THE NEXT CUT LINE IS TWO DRAWINGS ON TOP OF
+    // EACH OTHER, and on material there is no way to tell whose peak is whose.
+    // The gap between adjacent cuts is known here, so say it before the file
+    // is written rather than after the plate is engraved.
+    if (cut.sections.length > 1) {
+      const gapMM = sheet.L(Math.abs(
+        (cut.sections[1].atFraction - cut.sections[0].atFraction))
+        * (spec.axis === "vertical" ? sdem.ncols : sdem.nrows) * sdem.cell);
+      if (heightMM > gapMM) {
+        warnings.push(`${spec.name || "sections"}: a ${heightMM} mm profile is taller than the `
+          + `${gapMM.toFixed(1)} mm between neighbouring cuts — they will overlap and no reader `
+          + `will tell which peak belongs to which line. Fewer cuts, or less height.`);
+      }
+    }
+    if (gaps) {
+      warnings.push(`${spec.name || "sections"}: ${gaps} break${gaps === 1 ? "" : "s"} where the `
+        + `cut crosses unmeasured ground — the profile stops rather than bridging it.`);
+    }
+    if (!cut.sections.length) {
+      warnings.push(`${spec.name || "sections"}: nothing to cut — the raster holds no `
+        + `measured values along these lines.`);
+    }
+  }
+
+  // ── registration, the moment there is more than one sheet ────────────────
+  // ⚠️ TWO SHEETS THAT DO NOT ALIGN ARE TWO SHEETS. Two Ø 2.5 mm holes are cut
+  // through EVERY sheet at identical coordinates, for dowel pins. The pair is
+  // DELIBERATELY ASYMMETRIC — (6,6) and (W−6, H−10), not opposite corners — so
+  // the sheets cannot be pinned together rotated 180° and look plausible.
+  const sheetNames = new Set([...paths, ...circles].map((e) => e.sheet || "surface"));
+  if (sheetNames.size > 1) {
+    const marks = [[6, 6], [sheet.width - 6, sheet.height - 10]];
+    for (const name of sheetNames) {
+      for (const [mx, my] of marks) {
+        circles.push({ cx: mx, cy: my, r: 1.25, layer: OPERATIONS.photoMark,
+          sheet: name === "surface" ? undefined : name });
+      }
+    }
+    warnings.push(`This drawing spans ${sheetNames.size} sheets of material. Two Ø 2.5 mm `
+      + `registration holes are cut through every sheet — pin them with dowels before gluing. `
+      + `The pair is asymmetric on purpose: rotated 180°, the holes will not line up.`);
+    // Every material sheet gets the same outer outline as the surface, so the
+    // boards match, the registration holes sit identically on each, and the
+    // stack can also be squared by its edges.
+    for (const name of sheetNames) {
+      if (name === "surface") continue;
+      add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
+        sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true, name);
+    }
+  }
+
+  // ── sheet furniture ──────────────────────────────────────────────────────
+  // ⚠️ THE FURNITURE HAS ITS OWN FLOOR, NOT JUST A FRACTION OF THE MARGIN.
+  // Every piece used to be positioned as `margin × something`, which is fine
+  // until the margin is zero — and then the scale bar, the north point and the
+  // footer all collapse onto y = 0, on top of each other and on top of the cut
+  // line. The floors below leave a 12 mm sheet placing everything exactly where
+  // it did before, and give a 0 mm sheet somewhere to put them.
+  const M = sym.sheet.margin;
+  const fx = Math.max(M, 4);                       // left edge of the furniture
+  const fBar = Math.max(M * 0.42, 4);
+  const fText = Math.max(M * 0.62, 7.4);
+  const fNorth = Math.max(M * 0.25, 3);
+  // ⚠️ THE TITLE'S GAP FROM THE TOP EQUALS ITS GAP FROM THE LEFT (Marc,
+  // 2026-08-24). The baseline sits one cap height below that gap, so the INK —
+  // the part the eye measures — starts exactly `fx` from both edges. The old
+  // floor of 5 mm from the baseline left the cap 1.8 mm from the top edge next
+  // to a 4 mm left gap, and the corner looked pinched.
+  const TITLE_SIZE = 3.2;
+  const fTitle = fx + TITLE_SIZE;
+  add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
+    sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true);
+  const foot = [];
+  if (sym.sheet.scaleBar) {
+    const bar = scaleBar(sheet, { x: fx, y: fBar, target: 45 });
+    for (const p of bar.paths) add(p, OPERATIONS.furniture);
+    foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
+  }
+  if (sym.sheet.north) {
+    for (const p of northPoint({ x: sheet.width - fx, y: fNorth, size: 7 })) {
+      add(p, OPERATIONS.furniture);
+    }
+  }
+  if (contourReport) foot.push(`CONTOURS ${fmt(interval)} M`);
+  if (foot.length) {
+    for (const st of textStrokes(foot.join("   "), {
+      x: fx, y: fText, size: 2, tracking: 8,
+    })) add(st, OPERATIONS.furniture);
+  }
+  if (sym.sheet.title) {
+    for (const st of textStrokes(String(sym.sheet.title).toUpperCase(), {
+      x: fx, y: sheet.height - fTitle, size: TITLE_SIZE, tracking: 10,
+    })) add(st, OPERATIONS.furniture);
+  }
+
+  // ── the legend ───────────────────────────────────────────────────────────
+  if (sym.legend && sym.halftone.enabled && halftoneReport) {
+    const lx = sheet.width - fx - 30, ly = Math.max(M * 0.7, 4.5);
+    for (const st of textStrokes(String(halftoneReport.channels[0]).toUpperCase().slice(0, 18), {
+      x: lx, y: ly, size: 1.8, tracking: 6, anchor: "start",
+    })) add(st, OPERATIONS.furniture);
+  }
+
+  // ⚠️ SAID PLAINLY RATHER THAN LEFT TO BE DISCOVERED ON MATERIAL. With no
+  // margin there is nowhere outside the drawing for the furniture to go, so it
+  // is engraved over the terrain. That is a legitimate choice for a plate that
+  // will be assembled with others — but it is the user's to make knowingly.
+  if (M < 4 && (sym.sheet.scaleBar || sym.sheet.north || sym.sheet.title)) {
+    warnings.push(`With a ${fmt(M)} mm margin the scale bar, north point and title are `
+      + `engraved over the drawing — there is no margin for them to sit in. Switch them off `
+      + `for a plate meant to be assembled, or give the sheet a few millimetres.`);
+  }
+
+  return {
+    paths, circles, sheet, warnings,
+    report: {
+      raster: {
+        name: dem.name, size: `${dem.ncols} × ${dem.nrows}`, cell: dem.cell,
+        crs: dem.crs || "not stated by the file",
+        z: Number.isFinite(s.min) ? `${s.min.toFixed(2)} … ${s.max.toFixed(2)}` : "no data",
+        measured: s.total ? `${((s.measured / s.total) * 100).toFixed(1)}%` : "0%",
+      },
+      sheet: {
+        scale: `1:${sym.sheet.scale}`,
+        size: `${sheet.width.toFixed(1)} × ${sheet.height.toFixed(1)} mm`,
+        ground: `${fmt(dem.ncols * dem.cell)} × ${fmt(dem.nrows * dem.cell)} m`,
+      },
+      contours: contourReport,
+      contourLayers: contourReports,
+      photos: photoReport,
+      halftone: halftoneReport,
+      regions: regionReports,
+      symbols: symbolReports,
+      hatches: hatchReports,
+      sections: sectionReports,
+      sheets: [...sheetNames],
+      totals: { paths: paths.length, circles: circles.length,
+        vertices: paths.reduce((a, p) => a + p.pts.length / 2, 0) },
+    },
+  };
+}
+
+/**
+ * Everything of a path that falls on the sheet.
+ *
+ * ⚠️ NEEDED ONLY BECAUSE LAYERS MAY DISAGREE ABOUT EXTENT. The primary raster
+ * defines the sheet; a second one covering more ground would otherwise send
+ * line work off the material, where the machine would either refuse the job or
+ * — worse on some front-ends — silently translate everything to fit.
+ */
+function clipToSheet(pts, closed, sheet) {
+  const r = { x0: 0, y0: 0, x1: sheet.width, y1: sheet.height };
+  let inside = true;
+  for (let i = 0; i < pts.length; i += 2) {
+    if (pts[i] < r.x0 || pts[i] > r.x1 || pts[i + 1] < r.y0 || pts[i + 1] > r.y1) { inside = false; break; }
+  }
+  if (inside) return [{ pts, closed }];
+  return clipToRect(pts, closed, r);
+}
+
+/** The sheets a drawing spans, surface first. One DXF is written per sheet. */
+export function sheetsIn(drawing) {
+  const names = new Set([...drawing.paths, ...drawing.circles].map((e) => e.sheet || "surface"));
+  return ["surface", ...[...names].filter((n) => n !== "surface").sort()]
+    .filter((n) => names.has(n));
+}
+
+/**
+ * A compiled drawing as a DXF. The ONLY writer; the preview reads the same object.
+ *
+ * ⚠️ `sheet` filters to ONE piece of material. A two-material drawing is one
+ * Drawing and several files, and an entity is on exactly one of them — the
+ * alternative, one file with material told apart by layer, would put two
+ * different boards' cuts into one job.
+ */
+export function toDXF(drawing, o = {}) {
+  const want = o.sheet;
+  const on = (e) => want === undefined || (e.sheet || "surface") === want;
+  const d = new DXF();
+  for (const p of drawing.paths) if (on(p)) d.polyline(p.pts, p.layer, { closed: p.closed });
+  for (const c of drawing.circles) if (on(c)) d.circle(c.cx, c.cy, c.r, c.layer);
+  return d;
+}
+
+/** A plain-text cutting report, in the family's house format. */
+export function reportText(drawing, extra = {}) {
+  const r = drawing.report;
+  const L = [
+    "DL-TerrainMapper — cutting report",
+    extra.date ? `date: ${extra.date}` : "",
+    "",
+    `raster: ${r.raster.name || "(unnamed)"}  ${r.raster.size} cells @ ${r.raster.cell} units`,
+    `        ${r.raster.crs}, z ${r.raster.z}, ${r.raster.measured} of cells measured`,
+    `sheet:  ${r.sheet.size} at ${r.sheet.scale}, covering ${r.sheet.ground}`,
+    "",
+  ];
+  for (const c of (r.contourLayers || [])) {
+    L.push(`raster "${c.name}": ${c.paths} continuous paths over ${c.levels} levels`
+      + ` at ${fmt(c.interval)} m, ${c.points} points`);
+    L.push(`          ${c.style === c.indexStyle ? c.style : c.style + " / " + c.indexStyle} on `
+      + `${c.pass}${c.indexPass !== c.pass ? " and " + c.indexPass : ""}`);
+    // ⚠️ STATED IN THE FILE THE OPERATOR READS AT THE MACHINE, not only on
+    // screen. A dashed layer is many separate head moves and the time estimate
+    // will not resemble a solid one.
+    L.push(`          drawn as ${c.drawn} ${c.verdict === "continuous" ? "continuous paths" : "separate marks — " + c.verdict}`);
+    L.push(`          datum ${c.datum}, ${c.labels} labels engraved`);
+    if (c.modulation) {
+      L.push(`          MODULATED by "${c.modulation.name}": ${c.modulation.period} mm period, `
+        + `ink ${c.modulation.minInk}–${c.modulation.maxInk}% over ${c.modulation.lo} … `
+        + `${c.modulation.hi}${c.modulation.invert ? " (inverted)" : ""}`);
+    }
+    if (c.hachures) {
+      L.push(`          HACHURES: ${c.hachures.drawn} ticks every ${c.hachures.spacingMM} mm, `
+        + `${c.hachures.fixed ? `all ${c.hachures.maxMM} mm`
+          : `${c.hachures.minMM}–${c.hachures.maxMM} mm over ${c.hachures.loDeg}–${c.hachures.hiDeg}°`}`
+        + `${c.hachures.indexOnly ? ", index contours only" : ""}`);
+      L.push(`          ${c.hachures.drawn} separate head moves on ${c.hachures.pass}`
+        + `${c.hachures.uphill ? " — ⚠ POINTING UPHILL" : " — pointing downhill"}`);
+    }
+  }
+  if (r.photos) {
+    L.push(`photographs: ${r.photos.drawn} drawn, ${r.photos.corrected} moved by hand,`
+      + ` ${r.photos.withBearing} carrying a bearing`);
+    L.push(`          GPS uncertainty at this scale: about ±${r.photos.uncertaintyMM} mm on the sheet`);
+  }
+  if (r.halftone) {
+    L.push(`halftone: ${r.halftone.mode}, ${r.halftone.marks} marks — ${r.halftone.verdict}`);
+    L.push(`          ${r.halftone.channels.join(", ")}`);
+  }
+  for (const g of (r.regions || [])) {
+    L.push(`regions "${g.name}": ${g.count} patch${g.count === 1 ? "" : "es"} above `
+      + `${fmt(g.threshold)}, ${g.totalAreaM2} m² in all, mean ${g.mean}`);
+    L.push(`          ${g.mode === "window"
+      ? "cut as WINDOWS through the surface sheet — the voids are the removed ground"
+      : `cut from sheet "${g.sheet}" and glued on — the pieces are the added ground`}`
+      + ` (${g.pass})`);
+  }
+  for (const g of (r.symbols || [])) {
+    L.push(`circle grid "${g.name}": ${g.count} circles at ${g.spacingM} m spacing, `
+      + `Ø ${g.smallestMM}–${g.largestMM} mm`);
+    L.push(g.signed
+      ? `          fill (+) ${g.plus} filled dots on ${g.passPlus}; `
+        + `cut (−) ${g.minus} open rings on ${g.passMinus}; full scale ±${g.hi}`
+      : `          ${g.plus} circles on ${g.passPlus}, values ${g.lo} … ${g.hi}`);
+    if (g.dropped) {
+      L.push(`          ${g.dropped} dropped whole at the sheet edge — a clipped circle `
+        + `would read as a smaller value`);
+    }
+  }
+  for (const g of (r.hatches || [])) {
+    L.push(`hatch "${g.name}": ${g.marks} marks on ${g.lines} lines, ${g.spacingMM} mm `
+      + `spacing at ${g.angle}°, values ${g.lo} … ${g.hi}${g.invert ? " (ink on the low values)" : ""}`);
+    L.push(`          on ${g.pass} — every dash is a pierce; the count above is the job`);
+  }
+  for (const g of (r.sections || [])) {
+    L.push(`sections "${g.name}": ${g.count} ${g.axis} cuts (${g.labels}), `
+      + `${g.paths} profile paths at ${g.heightMM} mm`);
+    L.push(`          ⚠ VERTICAL ${g.exaggeration >= 1 ? "EXAGGERATION" : "COMPRESSION"} `
+      + `ABOUT ×${g.exaggeration}, `
+      + `${g.datum === "shared" ? "one shared datum" : "each on its own datum"}`
+      + ` — state it on the drawing`);
+    L.push(`          profiles on ${g.pass}, cut lines and letters on ${g.linePass}`);
+  }
+  if (r.sheets && r.sheets.length > 1) {
+    L.push("", `⚠ THIS DRAWING SPANS ${r.sheets.length} SHEETS OF MATERIAL: `
+      + r.sheets.map((s2) => (s2 === "surface" ? "surface (the base board)" : `"${s2}"`)).join(", "));
+    L.push(`  One DXF per sheet. Pin the registration holes with dowels before gluing;`);
+    L.push(`  the pair is asymmetric, so a 180° mistake will not line up.`);
+  }
+  L.push("", `totals: ${r.totals.paths} paths, ${r.totals.circles} circles,`
+    + ` ${r.totals.vertices} vertices`, "",
+    "laser passes (per DXF layer, cut outlines LAST):",
+    "  0  DLF-00_engrave       black    engraved fields and halftone",
+    "  1  DLF-01_score_light   blue     labels, numbers, sheet furniture",
+    "  2  DLF-02_score_medium  green    intermediate contours, bearings",
+    "  3  DLF-03_score_strong  cyan     index contours",
+    "  4  DLF-04_cut_inner     magenta  photograph marks",
+    "  5  DLF-05_cut_outer     red      sheet outline — run last",
+    "  (DLF-99_sheet is a boundary only — do not cut)",
+    "",
+    "⚠ the layer scheme matches DL-TerrainSlicer, so an existing laser",
+    "  pass configuration can be reused without being rebuilt.");
+  if (drawing.warnings.length) {
+    L.push("", "notes:");
+    for (const w of drawing.warnings) L.push(`  · ${w}`);
+  }
+  return L.filter((x) => x !== "").join("\n") + "\n";
+}
+
+/** Shallow-merge one level deep, so callers can override a single field. */
+function merge(base, over) {
+  const out = {};
+  for (const k of Object.keys(base)) {
+    out[k] = (base[k] && typeof base[k] === "object" && !Array.isArray(base[k]))
+      ? { ...base[k], ...(over[k] || {}) }
+      : (over[k] !== undefined ? over[k] : base[k]);
+  }
+  for (const k of Object.keys(over)) if (!(k in out)) out[k] = over[k];
+  return out;
+}
+
+const fmt = (v) => (Number.isFinite(v) ? String(+v.toFixed(3)) : "—");

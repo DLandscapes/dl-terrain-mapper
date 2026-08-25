@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+title: "DL-TerrainMapper"
+message: "If you use this tool in a publication or in teaching, please cite it."
+type: software
+authors:
+  - given-names: Marc
+    family-names: Ihle
+    affiliation: "Digital Landscapes"
+    email: marc.ihle@digital-landscapes.com
+repository-code: "https://github.com/DLandscapes/dl-terrain-mapper"
+url: "https://digital-landscapes.com/"
+abstract: >-
+  A laser-cut map compiler. Terrain and field observations go in; a fabricable
+  drawing comes out — engraved contours, labelled heights, located photograph
+  marks, hachures, halftones, sections and thresholded material regions — where
+  the symbology maps to laser operations instead of to screen pixels. One
+  raster can be translated several ways at once: the value as a line's
+  position, as a symbol's size, as the density of ink, or as height against
+  distance along a cut.
+keywords:
+  - landscape architecture
+  - terrain model
+  - laser cutting
+  - cartography
+  - GeoTIFF
+  - digital fabrication
+license: GPL-3.0-or-later
