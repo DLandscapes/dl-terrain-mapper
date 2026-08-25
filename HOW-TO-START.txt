@@ -63,4 +63,4 @@ AT THE MACHINE
 
 
 Digital Landscapes — https://digital-landscapes.com/
-Licence: GNU GPL v3.0 or later. See LICENSE and NOTICE.md.
+Licence: Apache-2.0. See LICENSE and NOTICE.

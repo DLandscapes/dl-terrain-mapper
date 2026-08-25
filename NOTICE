@@ -1,0 +1,118 @@
+DL-TerrainMapper — a laser-cut map compiler
+Copyright 2026 Digital Landscapes (Marc-Eduard Ihle)
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+===============================================================================
+THIRD-PARTY COMPONENTS REDISTRIBUTED IN THIS REPOSITORY
+===============================================================================
+
+This repository does not merely depend on the following — it CONTAINS them.
+Each licence text travels with its own files, at the path given, so the
+obligation is met by the copy you are holding rather than by a link that may
+rot.
+
+-------------------------------------------------------------------------------
+Source Sans 3
+    project/static/fonts/SourceSans3-VariableFont_wght.ttf
+    Licence: SIL Open Font License 1.1 — full text at
+             project/static/fonts/OFL-SourceSans3.txt
+    Copyright 2010-2024 Adobe (http://www.adobe.com/)
+    https://github.com/adobe-fonts/source-sans
+
+-------------------------------------------------------------------------------
+Quattrocento Sans
+    project/static/fonts/QuattrocentoSans-Regular.ttf
+    project/static/fonts/QuattrocentoSans-Bold.ttf
+    Licence: SIL Open Font License 1.1 — full text at
+             project/static/fonts/OFL.txt
+    Copyright (c) 2011, Pablo Impallari; Copyright (c) 2011, Igino Marini
+    https://github.com/impallari/Quattrocento-Sans
+
+Both fonts are used for the INTERFACE ONLY. Nothing that reaches the laser is
+set in them: engraved text uses this project's own single-stroke font, because
+an outline font handed to a laser is cut round the edge of its ink and the
+counters of an "8" drop out as dust.
+
+===============================================================================
+NO OTHER DEPENDENCIES
+===============================================================================
+
+There are none. No npm packages, no CDN, no bundler, no build step, and no
+vendored library. Every parser in this tool — GeoTIFF, Deflate, TIFF-LZW,
+PackBits, EXIF, XML — is written from the published specifications in this
+repository. What follows is therefore not a list of bundled code but a list of
+debts.
+
+===============================================================================
+TECHNIQUES, PRIOR WORK AND DEBTS
+===============================================================================
+
+The proportional-symbol method
+    Used by the circle grid and the image halftone. Marc Ihle's own technique,
+    first published for Hadseløya in 2017 on digital-landscapes.com and
+    generalised here.
+
+The DLF laser-pass layer scheme
+    DLF-00_engrave … DLF-05_cut_outer, carried UNCHANGED from DL-TerrainSlicer
+    and, before it, from the Grasshopper definition that tool replaced — so an
+    existing Trotec JobControl configuration works as it stands.
+    https://github.com/DLandscapes/dl-terrain-slicer
+
+The interface grammar and the committed theme
+    From the sibling tool DL-TerrainDiversity (Apache-2.0). The stylesheet is a
+    deliberate byte-identical copy with two documented token overrides.
+    https://github.com/DLandscapes/dl-terrain-diversity
+
+Hachures
+    The convention set out by Johann Georg Lehmann (1799) and developed in the
+    Swiss manner: strokes down the fall line, heavier and closer where the
+    ground is steeper. The same notation survives in the modern grading plan as
+    the ticked embankment.
+
+Marching squares, by triangle
+    The triangular formulation is used because it has no saddle ambiguity. The
+    approach is standard and long predates this implementation.
+
+Sutherland–Hodgman polygon clipping
+    Used to close region rings against the sheet edge, so a cut region meeting
+    the boundary stays closed.
+
+Horn's method
+    Used for slope, because it is the derivative every GIS agrees on.
+
+===============================================================================
+FORMATS
+===============================================================================
+
+DXF is written as R12 (AC1009), a format Autodesk published openly and which
+every laser front-end reads. SVG follows the W3C recommendation. Neither
+implementation derives from any other codebase.
+
+===============================================================================
+DATA
+===============================================================================
+
+No sample terrain in this repository comes from a restricted source. The
+demonstration site is generated by the tool itself, in code, so it cannot go
+stale against the readers, and the test fixtures are synthesised.
+
+⚠️ If you load imagery licensed for education and research only — for example
+from Norge i bilder — the tool will let you PREVIEW a halftone of it and will
+REFUSE to export it. That guard is deliberate. Please do not route around it.
+
+===============================================================================
+DEVELOPMENT
+===============================================================================
+
+Developed by Digital Landscapes with AI assistance. The design decisions, the
+symbology and all verification are Digital Landscapes' own.

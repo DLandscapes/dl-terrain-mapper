@@ -155,10 +155,13 @@ screen. They depend on nothing outside this repository.
 
 ## Licence and credits
 
-**GNU General Public License v3.0 or later** — see [`LICENSE`](LICENSE).
+**Apache License 2.0** — see [`LICENSE`](LICENSE). Same licence as the sibling
+tool [DL-TerrainDiversity](https://github.com/DLandscapes/dl-terrain-diversity).
 
-Credits, prior work and the fonts' own licences are in
-[`NOTICE.md`](NOTICE.md). If you cite the tool, [`CITATION.cff`](CITATION.cff)
-has the details.
+Credits, prior work and the fonts' own licences are in [`NOTICE`](NOTICE). If
+you cite the tool, [`CITATION.cff`](CITATION.cff) has the details.
+
+Developed by Digital Landscapes with AI assistance. The design decisions, the
+symbology and all verification are Digital Landscapes' own.
 
 Built by **Digital Landscapes** — <https://digital-landscapes.com/>
