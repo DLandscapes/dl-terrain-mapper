@@ -125,6 +125,24 @@ details.sub > summary.subhead:hover { color: var(--ink); }
    run of closed folds sits tight and the whole panel shortens. */
 details.sub > .sub-body { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
 
+
+/* ── the "add another" strip ──────────────────────────────────────────────
+   ⚠️ NOT THE BIG .dz BOX, and the difference is the point. A .dz is a
+   destination you go to; this sits at the BOTTOM OF ITS OWN LIST and reads as
+   "add another one of these" — the affordance the sibling tool uses for exactly
+   this job. It is also LABELLED WITH ITS GEOMETRY, so nobody has to work out
+   which zone takes a polygon. Ported from DL-TerrainSlicer's .shp-drop. */
+.shpdrop {
+  border: 1px dashed var(--line); border-radius: 4px;
+  padding: 7px 9px; margin: 2px 0 6px; cursor: pointer;
+  font-size: .78rem; color: var(--ink-soft); text-align: left;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.shpdrop:hover, .shpdrop.dragover {
+  border-color: var(--ink); color: var(--ink); background: var(--bg);
+}
+.shpdrop b { font-family: var(--font-head); font-weight: 700; }
+
 #scene-card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
 .row-between { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 #scene-name { font-size: .9rem; word-break: break-all; }

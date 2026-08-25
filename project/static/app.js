@@ -328,8 +328,18 @@ function paintSwatches() {
 //
 // ⚠️ SECTIONS CARRYING LIVE STATE OPEN BY DEFAULT. A fold that hides a switched-
 // on halftone is the same failure the section badges exist to prevent.
+// ⚠️ EVERY PLACE A FILE IS LOADED OPENS BY DEFAULT. Marc asked three separate
+// times in one session where to load something — the clip boundary, then the
+// features — and each time the answer was "behind a closed panel, then behind a
+// closed fold". Folding was added to shorten a long properties panel; it must
+// not also hide the front door. A section that ACCEPTS A FILE is where a reader
+// starts, so it starts open. The long style sections are what folding is for.
 const OPEN_BY_DEFAULT = new Set([
-  "Terrain", "Labels", "Line style and pass", "Files", "Readout",
+  // the ways in
+  "Terrain", "Site photographs", "Orthophoto", "Clip to a tile",
+  "Area features · polygons", "Line features", "Point features",
+  // and the two things read constantly
+  "Labels", "Line style and pass", "Files", "Readout",
 ]);
 function foldSubsections(root) {
   if (!root) return;
@@ -1639,23 +1649,31 @@ function fillPatternPickers() {
 const activeFeature = () => state.features[state.activeFeature] || null;
 
 function paintFeatureList() {
-  const host = $("featList");
-  if (!host) return;
-  host.innerHTML = "";
   setTimeout(syncGrip, 0);
-  state.features.forEach((f, i) => {
-    const el = document.createElement("div");
-    el.className = "pitem" + (i === state.activeFeature ? " sel" : "");
-    el.title = `${f.name} — ${f.count} ${FEATURE_KIND_LABEL[f.kind]}`;
-    el.innerHTML = `<span class="n" style="background:${passColour(f.style.pass)}">${i + 1}</span>
-      <span class="grow">${esc(f.name)}</span>
-      <span class="val">${esc(FEATURE_KIND_LABEL[f.kind])} · ${f.count}</span>`;
-    el.addEventListener("click", () => {
-      state.activeFeature = i;
-      syncFeature(); paintFeatureList();
+  // ⚠️ ONE LIST PER GEOMETRY, under its own heading, the way DL-TerrainSlicer
+  // does it. A single mixed list makes you read the kind off every row; three
+  // lists put a polygon layer where a polygon layer belongs, and the drop strip
+  // beneath each one says which geometry it takes. Marc asked where to drop a
+  // shapefile three times in one session — this is the answer to that.
+  for (const kind of ["polygon", "line", "point"]) {
+    const host = $("featList" + kind[0].toUpperCase() + kind.slice(1));
+    if (!host) continue;
+    host.innerHTML = "";
+    state.features.forEach((f, i) => {
+      if (f.kind !== kind) return;
+      const el = document.createElement("div");
+      el.className = "pitem" + (i === state.activeFeature ? " sel" : "");
+      el.title = `${f.name} — ${f.count} ${FEATURE_KIND_LABEL[f.kind]}`;
+      el.innerHTML = `<span class="n" style="background:${passColour(f.style.pass)}">${i + 1}</span>
+        <span class="grow">${esc(f.name)}</span>
+        <span class="val">${f.count}</span>`;
+      el.addEventListener("click", () => {
+        state.activeFeature = i;
+        syncFeature(); paintFeatureList();
+      });
+      host.appendChild(el);
     });
-    host.appendChild(el);
-  });
+  }
 }
 
 /** Push the selected feature layer's style into the controls. */
@@ -1716,21 +1734,29 @@ function buildFeatures() {
   }));
 }
 
-wireDrop("dropFeat", "fileFeat", async (files) => {
+/**
+ * Load shapefiles into a feature layer list.
+ *
+ * ⚠️ THE ZONE SUGGESTS A KIND; THE FILE DECIDES IT. Each strip is labelled with
+ * the geometry it expects, which is what makes the three of them worth having —
+ * but a file dropped on the wrong strip is still filed correctly, under its own
+ * heading, and told so. Refusing it would be pedantry: the tool can see what the
+ * geometry is, so it should use that rather than make the reader try again.
+ * @param {string} expected the kind the strip advertises
+ */
+async function loadFeatureFiles(files, expected) {
   const info = $("featInfo");
-  const added = [], failed = [];
+  const added = [], notes = [];
   for (const file of [...files].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))) {
     if (!/\.shp$/i.test(file.name)) {
-      failed.push(`${file.name} is not a .shp — a shapefile is several files sharing a `
-        + `name, and only .shp holds the geometry`);
+      notes.push(`${file.name} is not a .shp — a shapefile is several files sharing a name, `
+        + `and only .shp holds the geometry`);
       continue;
     }
     try {
       const r = readShapefile(await file.arrayBuffer(), { name: file.name });
       const style = JSON.parse(JSON.stringify(FEATURE_DEFAULTS[r.kind]));
-      // ⚠️ EACH LAYER ARRIVES ON THE NEXT PASS, for the same reason a raster
-      // does: two feature sets drawn identically are two nobody can tell apart.
       style.pass = NEXT_PASS[state.features.length % NEXT_PASS.length];
       state.features.push({
         id: state.nextId++, name: file.name.replace(/\.[^.]+$/, ""), kind: r.kind,
@@ -1739,14 +1765,18 @@ wireDrop("dropFeat", "fileFeat", async (files) => {
         style,
       });
       added.push(state.features[state.features.length - 1]);
-      for (const n of r.notes) failed.push(`${file.name}: ${n}`);
-    } catch (e) { failed.push(`${file.name}: ${e.message}`); }
+      if (expected && r.kind !== expected) {
+        notes.push(`${file.name} holds ${FEATURE_KIND_LABEL[r.kind]}, not `
+          + `${FEATURE_KIND_LABEL[expected]} — filed under ${FEATURE_KIND_LABEL[r.kind]}, `
+          + `where it belongs.`);
+      }
+      for (const n of r.notes) notes.push(`${file.name}: ${n}`);
+    } catch (e) { notes.push(`${file.name}: ${e.message}`); }
   }
-  if (added.length) state.activeFeature = state.features.length - 1;
+  if (added.length) state.activeFeature = state.features.indexOf(added[added.length - 1]);
   const parts = added.map((f) => `<b>${esc(f.name)}</b> — ${f.count} `
     + `${FEATURE_KIND_LABEL[f.kind]}.`);
-  // ⚠️ A CRS MISMATCH IS THE FAILURE THAT LOOKS LIKE A BROKEN TOOL. Said here,
-  // before the compile draws nothing and leaves the user guessing.
+  // ⚠️ A CRS MISMATCH IS THE FAILURE THAT LOOKS LIKE A BROKEN TOOL.
   if (state.dem && added.length) {
     const d = state.dem;
     const x1 = d.originX + d.ncols * d.cell, y0 = d.originY - d.nrows * d.cell;
@@ -1766,10 +1796,15 @@ wireDrop("dropFeat", "fileFeat", async (files) => {
       }
     }
   }
-  for (const m of failed) parts.push(`<span style="color:#a8541c">${esc(m)}</span>`);
+  for (const m of notes) parts.push(`<span style="color:#a8541c">${esc(m)}</span>`);
   info.innerHTML = parts.join("<br>") || "None loaded.";
   syncFeature(); paintFeatureList(); recompile();
-});
+}
+
+for (const kind of ["polygon", "line", "point"]) {
+  const cap = kind[0].toUpperCase() + kind.slice(1);
+  wireDrop("dropFeat" + cap, "fileFeat" + cap, (files) => loadFeatureFiles(files, kind));
+}
 
 $("ftRemove").addEventListener("click", () => {
   if (!activeFeature()) return;

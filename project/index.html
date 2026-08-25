@@ -385,18 +385,27 @@ details.panel[open] > summary .sec-badge { display: none; }
       <label class="check"><input type="checkbox" id="pHalo"> Draw the GPS uncertainty</label>
       <div class="plist" id="plist"></div>
 
-      <div class="subhead">Shapefile features</div>
-      <p class="why">A survey of trees is <b>points</b>, a path is a <b>line</b>, a planting bed
-        is a <b>polygon</b>. Each gets the styling its geometry can carry — an area takes a
-        fill pattern, a line takes a linetype, a point takes a radius first, because the symbol
-        is invented and how big it is, is the decision.</p>
-      <div id="dropzone6">
-        <div class="dz" id="dropFeat"><strong>Features</strong>
-          <span class="act">Choose .shp files, or drop them here</span>
-          <span class="fine">Points, lines or polygons, in the same CRS as your raster.
-            Several at once is fine — each becomes its own styled layer.</span></div>
-      </div>
-      <div class="plist" id="featList"></div>
+      <div class="subhead">Area features · polygons</div>
+      <p class="why">A planting bed, a water body, a paved surface. An area has an inside, so
+        it takes a <b>fill pattern</b> and an optional outline.</p>
+      <div class="plist" id="featListPolygon"></div>
+      <div class="shpdrop" id="dropFeatPolygon" data-kind="polygon">
+        + Add or drop a <b>polygon</b> shapefile (.shp)…</div>
+
+      <div class="subhead">Line features</div>
+      <p class="why">A path, a wall, a stream. A line has no inside, so it takes a
+        <b>linetype</b> and a scale.</p>
+      <div class="plist" id="featListLine"></div>
+      <div class="shpdrop" id="dropFeatLine" data-kind="line">
+        + Add or drop a <b>line</b> shapefile (.shp)…</div>
+
+      <div class="subhead">Point features</div>
+      <p class="why">A tree survey, a sample location, a lamp post. A point has no extent at
+        all, so it takes a <b>radius</b> first — the symbol is invented, and how big it is, is
+        the decision.</p>
+      <div class="plist" id="featListPoint"></div>
+      <div class="shpdrop" id="dropFeatPoint" data-kind="point">
+        + Add or drop a <b>point</b> shapefile (.shp)…</div>
       <p class="meta" id="featInfo">None loaded.</p>
 
       <div id="featStyle" hidden>
@@ -851,7 +860,9 @@ details.panel[open] > summary .sec-badge { display: none; }
 <input type="file" id="fileImage" accept=".tif,.tiff,image/*" hidden>
 <input type="file" id="fileStyle" accept=".qml,.sld,.xml" hidden>
 <input type="file" id="fileClip" accept=".shp" multiple hidden>
-<input type="file" id="fileFeat" accept=".shp" multiple hidden>
+<input type="file" id="fileFeatPolygon" accept=".shp" multiple hidden>
+<input type="file" id="fileFeatLine" accept=".shp" multiple hidden>
+<input type="file" id="fileFeatPoint" accept=".shp" multiple hidden>
 
 <script type="module" src="static/app.js"></script>
 </body>
