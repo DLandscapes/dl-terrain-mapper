@@ -29,6 +29,7 @@ import { toSVG } from "./svg.js";
 import { PASS_COLOURS, PASS_LABELS, passColour } from "./dxf.js";
 import { niceInterval } from "./contours.js";
 import { slopeDegrees } from "./symbols.js";
+import { readShapefile } from "./shapefile.js";
 
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
 // ⚠️ THE PREVIEW READS THE DXF'S OWN COLOURS. It used to keep a private table,
@@ -48,6 +49,11 @@ const state = {
   /** @type {import("./photos.js").PhotoPoint[]} */ photos: [],
   /** @type {Map<string,string>} */ thumbs: new Map(),
   /** @type {any} */ image: null,
+  // The tile boundary: rings in MAP units, applied as the compiler's last
+  // stage. Held separately from `clipOn` so it can be switched off and back on
+  // without reloading the file.
+  /** @type {any} */ clip: null,
+  clipOn: false,
   /** @type {any} */ drawing: null,
   unlocated: [],
   selected: -1,
@@ -891,6 +897,7 @@ function recompile() {
         layers: state.layers.filter((L) => L.on),
         photos: state.photos, regions: buildRegions(), symbols: buildSymbols(),
         hatches: buildHatches(), sections: buildSections(),
+        clip: state.clipOn ? state.clip : null,
         image: state.image, sym: state.sym,
       });
     } catch (e) {
@@ -1245,6 +1252,15 @@ function readout() {
       ${row("spacing", g.spacingMM + " mm at " + g.angle + "°")}
       ${row("values", g.lo + " … " + g.hi + (g.invert ? " (inverted)" : ""))}</div>`);
   }
+  if (r.clip) {
+    L.push(`<div class="grp"><h3>Clipped to ${esc(r.clip.name)}</h3>
+      ${r.clip.applied
+        ? row("rings", r.clip.rings + (r.clip.holes ? ` (${r.clip.holes} holes)` : ""))
+          + row("paths dropped", r.clip.droppedPaths)
+          + row("paths cut at the edge", r.clip.clippedPaths)
+          + row("circles dropped whole", r.clip.droppedCircles)
+        : row("not applied", r.clip.reason)}</div>`);
+  }
   for (const g of (r.sections || [])) {
     L.push(`<div class="grp"><h3>${esc(g.name)}</h3>
       ${row("cuts", g.count + " " + g.axis + " — " + g.labels)}
@@ -1413,6 +1429,72 @@ wireDrop("dropDEM", "fileDEM", async (files) => {
   $("demInfo").innerHTML = parts.join("<br>") || "No raster loaded.";
   syncLayer(); paintLayers(); recompile();
 });
+// ── the tile boundary ───────────────────────────────────────────────────────
+// ⚠️ THE WHOLE MODEL IS COMPILED FIRST AND CUT AFTERWARDS. That order is what
+// makes tiles seamless: every pattern is anchored to the ground, so a boundary
+// is a line drawn through one continuous field rather than two fields that
+// have to be persuaded to agree. See the note at the top of clip.js.
+wireDrop("dropClip", "fileClip", async (files) => {
+  const info = $("clipInfo");
+  const shp = files.find((f) => /\.shp$/i.test(f.name)) || files[0];
+  if (!shp) return;
+  // ⚠️ SAID PLAINLY, because picking the wrong sibling file is the commonest
+  // mistake: a shapefile is three or more files and only .shp holds geometry.
+  if (!/\.shp$/i.test(shp.name)) {
+    info.innerHTML = `<span style="color:#a8541c">${esc(shp.name)} is not a .shp. `
+      + `A shapefile is several files sharing a name — pick the <b>.shp</b>, the one `
+      + `with the geometry in it.</span>`;
+    return;
+  }
+  try {
+    const r = readShapefile(await shp.arrayBuffer(), { name: shp.name });
+    state.clip = { rings: r.rings, name: shp.name.replace(/\.[^.]+$/, "") };
+    state.clipOn = true;
+    $("clipOn").checked = true;
+    const holes = r.rings.filter((q) => q.hole).length;
+    const parts = [`<b>${esc(state.clip.name)}</b> — ${r.shapes} ${esc(r.type)} shape`
+      + `${r.shapes === 1 ? "" : "s"}, ${r.rings.length} ring${r.rings.length === 1 ? "" : "s"}`
+      + `${holes ? `, ${holes} of them holes` : ""}.`,
+      `Bounds ${r.bbox.x0.toFixed(0)}–${r.bbox.x1.toFixed(0)} E, `
+      + `${r.bbox.y0.toFixed(0)}–${r.bbox.y1.toFixed(0)} N.`];
+    for (const n of r.notes) parts.push(`<span style="color:#a8541c">${esc(n)}</span>`);
+    // ⚠️ A CRS MISMATCH IS THE FAILURE THAT LOOKS LIKE A BROKEN TOOL — the
+    // boundary lands in the North Sea, everything clips away, and the export is
+    // empty with no obvious cause. Say it here, before the compile does.
+    if (state.dem) {
+      const d = state.dem;
+      const dx1 = d.originX + d.ncols * d.cell, dy0 = d.originY - d.nrows * d.cell;
+      if (r.bbox.x1 < d.originX || r.bbox.x0 > dx1 || r.bbox.y1 < dy0 || r.bbox.y0 > d.originY) {
+        parts.push(`<span style="color:#a8541c">⚠️ This boundary does not overlap the `
+          + `raster (${d.originX.toFixed(0)}–${dx1.toFixed(0)} E, ${dy0.toFixed(0)}–`
+          + `${d.originY.toFixed(0)} N). Almost always a different CRS — reproject the `
+          + `boundary to ${esc(d.crs || "the raster's CRS")} in QGIS.</span>`);
+      }
+    }
+    info.innerHTML = parts.join("<br>");
+  } catch (e) {
+    state.clip = null; state.clipOn = false; $("clipOn").checked = false;
+    info.innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
+  }
+  recompile();
+});
+$("clipOn").addEventListener("change", () => {
+  state.clipOn = $("clipOn").checked && !!state.clip;
+  if ($("clipOn").checked && !state.clip) {
+    $("clipInfo").textContent = "Load a boundary first.";
+    $("clipOn").checked = false;
+  }
+  state.view.ready = false;
+  recompile();
+});
+$("clipClear").addEventListener("click", () => {
+  state.clip = null; state.clipOn = false;
+  $("clipOn").checked = false;
+  $("clipInfo").textContent = "No boundary loaded — the whole model is drawn.";
+  state.view.ready = false;
+  recompile();
+});
+
 wireDrop("dropPhotos", "filePhotos", async (files) => {
   if (!files.length || !state.dem) {
     $("photoInfo").textContent = state.dem ? "No files." : "Load the raster first — it decides the grid.";

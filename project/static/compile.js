@@ -32,6 +32,7 @@ import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
 import { cutSections } from "./sections.js";
+import { clipDrawing, ringsBBox } from "./clip.js";
 import { DXF } from "./dxf.js";
 
 /** The default symbology — every value the compiler needs, in one place. */
@@ -133,9 +134,43 @@ export function compile(input) {
   const add = (pts, layer, closed = false, sheet) => {
     if (pts && pts.length >= 4) paths.push({ pts, layer, closed, sheet });
   };
+  // ⚠️ SHEET FURNITURE IS TAGGED, NOT INFERRED FROM ITS PASS. The clip stage
+  // exempts furniture — a scale bar cut in half is no longer a scale bar — and
+  // the obvious way to spot it, "anything on the light-score pass", is WRONG:
+  // that pass is also the default for hatching, hachures, labels and section
+  // lines. Inferring it exempted an entire 16,000-mark hatch from the clip and
+  // the drawing came back barely changed. A tag says what a thing IS; a layer
+  // only says what the machine does to it.
+  const addFurniture = (pts, layer, closed = false) => {
+    if (pts && pts.length >= 4) paths.push({ pts, layer, closed, furniture: true });
+  };
 
   const sheet = sheetFor(dem, { scale: sym.sheet.scale, margin: sym.sheet.margin });
   const s = stats(dem);
+
+  // ── is there a usable clip boundary? decided HERE, before anything is drawn ─
+  // ⚠️ THE FRAME DEPENDS ON THIS ANSWER, so it cannot wait until the clip is
+  // applied at the end. Skipping the rectangular outline merely because a
+  // boundary was SUPPLIED — then refusing that boundary for not overlapping —
+  // leaves the plate with NO OUTER CUT AT ALL: a drawing that engraves
+  // perfectly and never comes free of the sheet. Found by a test that asserted
+  // a refused clip changes nothing, which it then did not.
+  let clipRings = null;
+  let clipOffTarget = false;
+  if (input.clip && input.clip.rings && input.clip.rings.length) {
+    const mm = input.clip.rings.map((r) => {
+      const p = r.pts;
+      const q = new Float64Array(p.length);
+      for (let i = 0; i < p.length; i += 2) {
+        q[i] = sheet.X(p[i]);
+        q[i + 1] = sheet.Y(p[i + 1]);
+      }
+      return { pts: q, hole: !!r.hole };
+    });
+    const bb = ringsBBox(mm);
+    clipOffTarget = bb.x1 < 0 || bb.x0 > sheet.width || bb.y1 < 0 || bb.y0 > sheet.height;
+    if (!clipOffTarget) clipRings = mm;
+  }
   const interval = sym.contours.interval > 0
     ? sym.contours.interval
     : niceInterval(s.relief, 14);
@@ -569,7 +604,7 @@ export function compile(input) {
           for (const st of textStrokes(String(v2 >= 10 ? v2.toFixed(0) : +v2.toFixed(2)), {
             x: lx, y: ly + rMax + 2.6, size: 1.8,
             anchor: "middle", baseline: "middle", tracking: 6,
-          })) add(st, OPERATIONS.furniture);
+          })) addFurniture(st, OPERATIONS.furniture);
           lx += r2 + gap;
         }
       }
@@ -806,29 +841,35 @@ export function compile(input) {
   // to a 4 mm left gap, and the corner looked pinched.
   const TITLE_SIZE = 3.2;
   const fTitle = fx + TITLE_SIZE;
-  add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
-    sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true);
+  // ⚠️ WITH A CLIP BOUNDARY THE RECTANGULAR FRAME IS NOT DRAWN. The tile's own
+  // outline becomes the outer cut, added after clipping — a plate cannot have
+  // two outer cuts, and the rectangle would slice straight through the shape
+  // the boundary exists to define.
+  if (!clipRings) {
+    add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
+      sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true);
+  }
   const foot = [];
   if (sym.sheet.scaleBar) {
     const bar = scaleBar(sheet, { x: fx, y: fBar, target: 45 });
-    for (const p of bar.paths) add(p, OPERATIONS.furniture);
+    for (const p of bar.paths) addFurniture(p, OPERATIONS.furniture);
     foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
   }
   if (sym.sheet.north) {
     for (const p of northPoint({ x: sheet.width - fx, y: fNorth, size: 7 })) {
-      add(p, OPERATIONS.furniture);
+      addFurniture(p, OPERATIONS.furniture);
     }
   }
   if (contourReport) foot.push(`CONTOURS ${fmt(interval)} M`);
   if (foot.length) {
     for (const st of textStrokes(foot.join("   "), {
       x: fx, y: fText, size: 2, tracking: 8,
-    })) add(st, OPERATIONS.furniture);
+    })) addFurniture(st, OPERATIONS.furniture);
   }
   if (sym.sheet.title) {
     for (const st of textStrokes(String(sym.sheet.title).toUpperCase(), {
       x: fx, y: sheet.height - fTitle, size: TITLE_SIZE, tracking: 10,
-    })) add(st, OPERATIONS.furniture);
+    })) addFurniture(st, OPERATIONS.furniture);
   }
 
   // ── the legend ───────────────────────────────────────────────────────────
@@ -836,7 +877,7 @@ export function compile(input) {
     const lx = sheet.width - fx - 30, ly = Math.max(M * 0.7, 4.5);
     for (const st of textStrokes(String(halftoneReport.channels[0]).toUpperCase().slice(0, 18), {
       x: lx, y: ly, size: 1.8, tracking: 6, anchor: "start",
-    })) add(st, OPERATIONS.furniture);
+    })) addFurniture(st, OPERATIONS.furniture);
   }
 
   // ⚠️ SAID PLAINLY RATHER THAN LEFT TO BE DISCOVERED ON MATERIAL. With no
@@ -849,8 +890,66 @@ export function compile(input) {
       + `for a plate meant to be assembled, or give the sheet a few millimetres.`);
   }
 
+  // ── the clip: cut the tile out of the finished drawing ───────────────────
+  // ⚠️ THE LAST STAGE, DELIBERATELY. Everything above was computed over the
+  // whole model in one coordinate frame, so no pattern can disagree with
+  // itself across a seam; the boundary is a line drawn through a field that
+  // already existed. Clipping FIRST and generating after would put every
+  // anchoring question back — see the note at the top of clip.js.
+  //
+  // ⚠️ AND IT HAPPENS INSIDE compile(), NOT AT EXPORT. The preview reads this
+  // same Drawing, so a clipped drawing previews clipped. A clip applied on the
+  // way out of the writers would make the preview a picture of a file that
+  // does not exist, which is the one thing this tool is built not to do.
+  let clipReport = null;
+  let outPaths = paths, outCircles = circles;
+  if (clipOffTarget) {
+    // ⚠️ REFUSED, NOT APPLIED. A boundary that misses the drawing clips
+    // everything away, and an empty DXF at the machine looks like the tool
+    // broke rather than like the wrong file was picked. The rectangular frame
+    // was drawn above precisely because this case was decided in advance.
+    warnings.push(`${input.clip.name || "the clip boundary"} does not overlap the `
+      + `drawing at all — it was IGNORED, and the sheet keeps its own outline. Check it `
+      + `is in the same coordinate system as the raster (this drawing is `
+      + `${dem.crs || "in the raster's own CRS"}).`);
+    clipReport = { name: input.clip.name || "boundary", applied: false,
+      reason: "no overlap with the drawing" };
+  } else if (clipRings) {
+    // The furniture belongs to the plate, not to the ground, so it survives
+    // the clip — a scale bar cut in half is no longer a scale bar.
+    const r = clipDrawing({ paths, circles }, clipRings,
+      { keep: (e) => e.furniture === true });
+    outPaths = r.paths;
+    outCircles = r.circles;
+    const survived = outPaths.length + outCircles.length;
+    // The boundary itself is now the outer cut — the shape of the tile.
+    for (const ring of clipRings) {
+      if (ring.hole) continue;
+      outPaths.push({ pts: ring.pts,
+        layer: sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds,
+        closed: true });
+    }
+    clipReport = { name: input.clip.name || "boundary", applied: true,
+      rings: clipRings.length, holes: clipRings.filter((q) => q.hole).length,
+      droppedPaths: r.droppedPaths, clippedPaths: r.clippedPaths,
+      droppedCircles: r.droppedCircles,
+      keptPaths: outPaths.length, keptCircles: outCircles.length };
+    warnings.push(`Clipped to ${input.clip.name || "the boundary"}: `
+      + `${r.droppedPaths} paths fell outside and ${r.clippedPaths} were cut at it; `
+      + `${r.droppedCircles} circles were dropped WHOLE, because a clipped circle is `
+      + `an arc and an arc reads as a smaller value. The boundary is now the outer cut.`);
+    // ⚠️ COUNTED BEFORE THE OUTLINE IS ADDED. Counting after would always find
+    // at least one path — the boundary itself — and the drawing would look
+    // populated while holding nothing but its own outline.
+    if (!survived) {
+      warnings.push(`⚠ NOTHING SURVIVED THE CLIP — the file would hold only the boundary `
+        + `outline. Check it is over the terrain and in the same CRS.`);
+    }
+  }
+  const paths2 = outPaths, circles2 = outCircles;
+
   return {
-    paths, circles, sheet, warnings,
+    paths: paths2, circles: circles2, sheet, warnings,
     report: {
       raster: {
         name: dem.name, size: `${dem.ncols} × ${dem.nrows}`, cell: dem.cell,
@@ -871,9 +970,10 @@ export function compile(input) {
       symbols: symbolReports,
       hatches: hatchReports,
       sections: sectionReports,
+      clip: clipReport,
       sheets: [...sheetNames],
-      totals: { paths: paths.length, circles: circles.length,
-        vertices: paths.reduce((a, p) => a + p.pts.length / 2, 0) },
+      totals: { paths: paths2.length, circles: circles2.length,
+        vertices: paths2.reduce((a, p) => a + p.pts.length / 2, 0) },
     },
   };
 }
@@ -998,6 +1098,17 @@ export function reportText(drawing, extra = {}) {
       + `${g.datum === "shared" ? "one shared datum" : "each on its own datum"}`
       + ` — state it on the drawing`);
     L.push(`          profiles on ${g.pass}, cut lines and letters on ${g.linePass}`);
+  }
+  if (r.clip) {
+    L.push(r.clip.applied
+      ? `clipped to "${r.clip.name}": ${r.clip.rings} ring${r.clip.rings === 1 ? "" : "s"}`
+        + `${r.clip.holes ? ` (${r.clip.holes} of them holes)` : ""}, `
+        + `${r.clip.droppedPaths} paths dropped, ${r.clip.clippedPaths} cut at the boundary, `
+        + `${r.clip.droppedCircles} circles dropped whole`
+      : `⚠ CLIP NOT APPLIED — "${r.clip.name}": ${r.clip.reason}`);
+    if (r.clip.applied) {
+      L.push(`          the boundary IS the outer cut; the rectangular frame is not drawn`);
+    }
   }
   if (r.sheets && r.sheets.length > 1) {
     L.push("", `⚠ THIS DRAWING SPANS ${r.sheets.length} SHEETS OF MATERIAL: `

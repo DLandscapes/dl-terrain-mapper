@@ -442,6 +442,26 @@ details.panel[open] > summary .sec-badge { display: none; }
       <h2>Export</h2><span class="sec-badge" id="b-export"></span>
     </summary>
     <div class="sec-body">
+      <div class="subhead">Clip to a tile</div>
+      <p class="why">Load the <b>whole</b> model, set up every layer over all of it, then cut
+        out the piece you are responsible for. Doing it in that order is what makes tiles
+        match: hatches, dashes and symbol grids are anchored to the <b>ground</b>, so a
+        boundary is a line drawn through one continuous field — neighbouring tiles cannot
+        disagree, because there was only ever one field.</p>
+      <div id="dropzone5">
+        <div class="dz" id="dropClip"><strong>Tile boundary</strong>
+          <span>A polygon shapefile — the <b>.shp</b>, not the .dbf or .shx. Draw it in
+            QGIS and save it in the same CRS as your raster.</span></div>
+      </div>
+      <label class="check"><input type="checkbox" id="clipOn"> Clip the drawing to it</label>
+      <button class="link" id="clipClear" style="font-size:.66rem">Remove the boundary</button>
+      <p class="why" id="clipInfo">No boundary loaded — the whole model is drawn.</p>
+      <p class="why">⚠️ The boundary becomes the <b>outer cut</b>, and the rectangular sheet
+        outline is not drawn — a plate cannot have two outer cuts. Circles that straddle the
+        edge are dropped <b>whole</b>: a clipped circle is an arc, and an arc reads as a
+        smaller value than it stands for.</p>
+
+      <div class="subhead">Files</div>
       <p class="why">The file carries DL-TerrainSlicer's six pass layers unchanged, so a laser
         configuration already set up for that tool can be reused as it stands.</p>
       <button id="expDXF">Save the DXF</button>
@@ -741,6 +761,7 @@ details.panel[open] > summary .sec-badge { display: none; }
 <input type="file" id="filePhotos" accept="image/jpeg,image/*" multiple hidden>
 <input type="file" id="fileImage" accept=".tif,.tiff,image/*" hidden>
 <input type="file" id="fileStyle" accept=".qml,.sld,.xml" hidden>
+<input type="file" id="fileClip" accept=".shp" multiple hidden>
 
 <script type="module" src="static/app.js"></script>
 </body>

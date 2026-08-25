@@ -74,28 +74,89 @@ export function hatchField(dem, opts = {}) {
     if (s < sMin) sMin = s; if (s > sMax) sMax = s;
     if (t < tMin) tMin = t; if (t > tMax) tMax = t;
   }
-  const sMid = ((x0 + x1) / 2) * nx + ((y0 + y1) / 2) * ny;
+  // ⚠️ THE PHASE IS ANCHORED TO THE WORLD ORIGIN, NOT TO THIS RASTER.
+  // Anchoring at the raster's own centre reads better while you drag a slider —
+  // the field does not slide when the spacing changes — but it makes the
+  // pattern a property of the TILE instead of a property of the GROUND, and
+  // two abutting plates then hatch on different phases. Measured: a 37-row
+  // tile above a 25-row tile, sharing an edge exactly, came out on offsets
+  // 2.5 and 0.5 of a 3 m spacing, which at the seam is a doubled line on one
+  // side and a widened gap on the other.
+  //
+  // Anchored to the world, every raster on the same ground produces the same
+  // scanlines, so plates abut invisibly and a hatch computed on the whole
+  // model matches a hatch computed on any tile of it. The cost is that
+  // changing the spacing now re-phases the field against the raster. That is
+  // the right trade for georeferenced data: the drawing belongs to the ground.
+  const sMid = 0;
 
   // Nearest-cell sampling, by containment. Bilinear would invent intermediate
   // values across a NaN edge or a class boundary; a hatch is a field of marks,
   // and the honest mark is the cell's own value.
+  //
+  // ⚠️ THE COLUMN AND ROW ARE CLAMPED, NOT REFUSED — EDGE REPLICATION. This is
+  // the same fix contours.js makes ("extended one replicated cell and clipped
+  // back") and it is here for the same measured reason. A mark's ink is decided
+  // by the sample at its CENTRE, so a mark straddling the boundary used to be
+  // refused outright and the hatch stopped up to half a step short of the
+  // declared edge — measured at 0.76 m on a 40 m tile, which is ~4 mm of blank
+  // paper at 1:200, at EVERY edge. On Marc's abutting plates that is a visible
+  // white band down every seam, exactly the failure the contour tracer already
+  // had and fixed.
+  //
+  // Clamping borrows the nearest REAL measured cell for that half-step band,
+  // and every emitted segment is then clipped back to the raster's true
+  // rectangle, so nothing outside the data is ever drawn. ⚠️ Interior nodata is
+  // untouched by this: a clamped index still reads its cell's own value, so a
+  // NaN inside the raster stays NaN and stays bare.
   let unmeasured = 0;
   const sample = (px, py) => {
-    const c = Math.floor((px - originX) / cell), r = Math.floor((originY - py) / cell);
-    if (c < 0 || r < 0 || c >= ncols || r >= nrows) return NaN;
+    let c = Math.floor((px - originX) / cell), r = Math.floor((originY - py) / cell);
+    c = c < 0 ? 0 : c >= ncols ? ncols - 1 : c;
+    r = r < 0 ? 0 : r >= nrows ? nrows - 1 : r;
     return z[r * ncols + c];
+  };
+
+  // ⚠️ CLIPPED BACK TO THE TRUE EXTENT. Liang–Barsky on a two-point segment.
+  // Returns null when the segment lies wholly outside, which is what the
+  // widened walk produces at the rotated bounding box's corners.
+  const rect = { x0, x1, y0, y1 };
+  const clipSeg = (ax, ay, bx, by) => {
+    let t0 = 0, t1 = 1;
+    const dx = bx - ax, dy = by - ay;
+    const edge = (p, q) => {
+      if (p === 0) return q >= 0;                 // parallel: inside or not
+      const r2 = q / p;
+      if (p < 0) { if (r2 > t1) return false; if (r2 > t0) t0 = r2; }
+      else { if (r2 < t0) return false; if (r2 < t1) t1 = r2; }
+      return true;
+    };
+    if (!edge(-dx, ax - rect.x0) || !edge(dx, rect.x1 - ax)
+      || !edge(-dy, ay - rect.y0) || !edge(dy, rect.y1 - ay)) return null;
+    return Float64Array.of(ax + t0 * dx, ay + t0 * dy, ax + t1 * dx, ay + t1 * dy);
   };
 
   /** @type {Float64Array[]} */
   const paths = [];
   const emit = (s, a, b) => {
     if (b - a < minMark) return;
-    paths.push(Float64Array.of(s * nx + a * ux, s * ny + a * uy,
-                               s * nx + b * ux, s * ny + b * uy));
+    // Clipped to the true extent, THEN length-checked again: a mark mostly
+    // outside can come back as a runt, and a runt is a dwell.
+    const seg = clipSeg(s * nx + a * ux, s * ny + a * uy,
+                        s * nx + b * ux, s * ny + b * uy);
+    if (!seg) return;
+    if (Math.hypot(seg[2] - seg[0], seg[3] - seg[1]) < minMark) return;
+    paths.push(seg);
   };
 
   let lines = 0;
-  const k0 = Math.ceil((sMin - sMid) / spacing), k1 = Math.floor((sMax - sMid) / spacing);
+  // ⚠️ ONE SCANLINE AND ONE STEP WIDER THAN THE BOUNDING BOX, at both ends.
+  // ceil/floor put the outermost scanline up to a full spacing INSIDE the
+  // extent, and the walk below started half a step in — together that was the
+  // shortfall. Widening costs a few clipped-away marks and buys an edge that
+  // is actually the edge.
+  const k0 = Math.ceil((sMin - sMid) / spacing) - 1;
+  const k1 = Math.floor((sMax - sMid) / spacing) + 1;
   for (let k = k0; k <= k1; k++) {
     const s = sMid + k * spacing;
     lines++;
@@ -104,7 +165,11 @@ export function hatchField(dem, opts = {}) {
       if (Number.isFinite(runStart)) emit(s, runStart, end);
       runStart = NaN;
     };
-    for (let t = tMin; t < tMax; t += step) {
+    // ⚠️ THE ALONG-LINE PHASE IS WORLD-ANCHORED TOO, for the same reason: a
+    // walk starting at this raster's own tMin puts the dashes of two tiles out
+    // of step with each other even when their scanlines line up.
+    const tStart = Math.floor(tMin / step) * step - step;
+    for (let t = tStart; t < tMax + step; t += step) {
       const mid = t + step / 2;
       const v = sample(s * nx + mid * ux, s * ny + mid * uy);
       if (!Number.isFinite(v)) {
@@ -124,7 +189,7 @@ export function hatchField(dem, opts = {}) {
       const len = d * step;
       if (len > 0) emit(s, mid - len / 2, mid + len / 2);
     }
-    flush(tMax);
+    flush(tMax + step);
   }
   return { paths, marks: paths.length, lines, lo, hi, unmeasured };
 }
