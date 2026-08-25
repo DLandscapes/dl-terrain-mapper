@@ -261,12 +261,19 @@ export function symbolLegend(lo, hi, opts = {}) {
  * Slope, in degrees, by the Horn method — the derivative most likely to be
  * asked for first, and the one every GIS agrees on.
  *
- * ⚠️ THIS IS THE ONLY TERRAIN ANALYSIS THIS TOOL COMPUTES, AND IT SHOULD STAY
- * THAT WAY. DL-TerrainDiversity is the analysis engine of the family; wetness,
- * ruggedness, geodiversity and the rest belong there, and a second
- * implementation here would drift from it. Slope is carried only because a
- * symbol sheet with nothing to put on it cannot be tested. Anything richer
- * should arrive as a raster exported from that tool and be read by geotiff.js.
+ * ⚠️ THIS WAS ONCE THE ONLY TERRAIN ANALYSIS THIS TOOL COMPUTED, AND THE NOTE
+ * HERE SAID IT SHOULD STAY THAT WAY — wetness, ruggedness and the rest
+ * belonging to DL-TerrainDiversity, the analysis engine of the family. Marc
+ * moved that line on 2026-08-25: ruggedness, roughness and a wetness index now
+ * live in `terrain.js`, for a class that cannot round-trip through another tool
+ * mid-exercise. The cost the old note was guarding against is real and has not
+ * gone away — two DL tools can now disagree about one site — so every index
+ * there states the exact definition it implements. Read that module's header
+ * before adding a third.
+ *
+ * Slope stays here because it is what the symbol machinery was tested against.
+ * Anything richer than what `terrain.js` carries should still arrive as a
+ * raster exported from TerrainDiversity and be read by geotiff.js.
  * @param {import("./dem.js").DEM} dem
  * @returns {Float32Array} degrees, NaN where the 3×3 window is incomplete
  */

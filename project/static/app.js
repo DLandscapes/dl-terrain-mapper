@@ -30,6 +30,7 @@ import { PASS_COLOURS, PASS_LABELS, passColour } from "./dxf.js";
 import { niceInterval } from "./contours.js";
 import { slopeDegrees } from "./symbols.js";
 import { readShapefile } from "./shapefile.js";
+import { ruggedness, roughness, wetnessIndex, indexNote } from "./terrain.js";
 
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
 // ⚠️ THE PREVIEW READS THE DXF'S OWN COLOURS. It used to keep a private table,
@@ -610,6 +611,14 @@ function syncLayer() {
  * quiet disaster if it were load-bearing for the arithmetic too.
  * @param {string} id @param {any} L the layer @param {{source:string}} cfg
  */
+/** What each derived surface is called in a picker and in a layer's name. */
+const INDEX_LABEL = {
+  slope: "slope (degrees)",
+  tri: "ruggedness — TRI (Riley)",
+  roughness: "roughness (3×3 range)",
+  twi: "wetness index — TWI",
+};
+
 function fillSourcePicker(id, L, cfg) {
   const sel = $(id);
   if (!sel) return;
@@ -620,15 +629,41 @@ function fillSourcePicker(id, L, cfg) {
     sel.appendChild(o);
   };
   add("self", "this layer's own values");
-  // Slope is the one derived attribute on offer — the single analysis this
-  // tool computes (see symbols.js); anything richer arrives as its own raster.
-  add("slope", "slope of this layer (degrees)");
+  // ⚠️ FOUR DERIVED SURFACES, AND EACH NAMES ITS DEFINITION IN THE READOUT.
+  // "The wetness index" is not one number — see terrain.js. Anything richer
+  // than these still arrives as its own raster from DL-TerrainDiversity.
+  for (const k of ["slope", "tri", "roughness", "twi"]) add(k, INDEX_LABEL[k]);
   state.layers.forEach((q, qi) => {
     if (q === L) return;
     add(String(q.id), `difference to ${qi + 1} · ${q.name}`);
   });
   sel.value = cfg.source;
   if (sel.value !== cfg.source) { cfg.source = "self"; sel.value = "self"; }
+  // ⚠️ THE DEFINITION TRAVELS WITH THE CHOICE. "Ruggedness" and "the wetness
+  // index" are each several different published numbers; a drawing that does
+  // not say which one it used is a picture rather than a measurement.
+  sel.title = INDEX_LABEL[cfg.source] ? indexNote(cfg.source) : "";
+}
+
+/**
+ * The note a derived source owes the reader, shown under its own block.
+ * ⚠️ TWI EARNS AN EXTRA SENTENCE because it is the one index here that is not
+ * a local calculation: it routes water across the whole surface, so a tile
+ * computed on its own is wrong at every edge.
+ * @param {string} source @param {HTMLElement|null} note @param {boolean} active
+ */
+function noteSource(source, note, active, ms) {
+  if (!note || !active || !INDEX_LABEL[source]) return;
+  let t = indexNote(source);
+  if (source === "twi") {
+    t += ". Compute it on the WHOLE model and clip afterwards — a tile on its own "
+      + "is missing the water that would arrive from outside it.";
+  }
+  if (ms >= 300) {
+    t += ` Took ${(ms / 1000).toFixed(1)} s to compute, and is kept until this raster `
+      + `changes — the wait does not repeat.`;
+  }
+  note.textContent = t;
 }
 
 /**
@@ -691,10 +726,33 @@ function buildRegions() {
  * @returns {{dem:any, label:string}}
  */
 function resolveSource(L, source) {
-  if (source === "slope") {
-    return { dem: { ...L.dem, z: slopeDegrees(L.dem), name: `${L.name} slope` },
-      label: `${L.name} slope` };
-  }
+  // ⚠️ THE DERIVED SURFACES ARE CACHED PER LAYER. The wetness index fills every
+  // depression and routes flow across the whole raster; recomputing it on each
+  // keystroke of an unrelated slider would make the tool feel broken. The cache
+  // is keyed by the index name and thrown away whenever the layer's raster is
+  // replaced, which is the only thing that can change the answer.
+  const derived = (kind, fn) => {
+    L.derived = L.derived || {};
+    L.derivedMs = L.derivedMs || {};
+    if (!L.derived[kind]) {
+      // ⚠️ TIMED, AND THE TIME IS SHOWN IF IT WAS LONG ENOUGH TO NOTICE. The
+      // wetness index fills every depression and routes flow across the whole
+      // raster: measured at 80 ms on the demonstration site, 0.7 s at a
+      // million cells and 2.7 s at four million — and it runs on the page's
+      // one thread, so the tool STOPS for that long. An unexplained freeze
+      // reads as a crash; a stated one reads as work.
+      const t0 = performance.now();
+      L.derived[kind] = fn(L.dem);
+      L.derivedMs[kind] = Math.round(performance.now() - t0);
+    }
+    return { dem: { ...L.dem, z: L.derived[kind], name: `${L.name} ${kind}` },
+      label: `${L.name} ${INDEX_LABEL[kind] || kind}`,
+      ms: L.derivedMs[kind] };
+  };
+  if (source === "slope") return derived("slope", slopeDegrees);
+  if (source === "tri") return derived("tri", ruggedness);
+  if (source === "roughness") return derived("roughness", roughness);
+  if (source === "twi") return derived("twi", (d) => wetnessIndex(d));
   if (source !== "self") {
     const other = state.layers.find((q) => String(q.id) === String(source));
     if (!other) throw new Error("that layer is no longer loaded");
@@ -716,6 +774,7 @@ function buildSymbols() {
       if (note && L === activeLayer()) note.textContent = e.message;
       continue;
     }
+    noteSource(g.source, note, L === activeLayer(), r.ms);
     out.push({ dem: r.dem, name: `${r.label} · circles`,
       signed: g.signed, across: g.across,
       minFraction: g.min / 100, maxFraction: g.max / 100,
@@ -747,6 +806,7 @@ function resolveModulation() {
       const r = resolveSource(L, md.source);
       c.modulate = { dem: r.dem, name: r.label, period: md.period,
         minInk: md.minInk, maxInk: md.maxInk, invert: md.invert };
+      noteSource(md.source, note, L === activeLayer(), r.ms);
     } catch (e) {
       if (note && L === activeLayer()) note.textContent = e.message;
     }
@@ -766,6 +826,7 @@ function buildHatches() {
       if (note && L === activeLayer()) note.textContent = e.message;
       continue;
     }
+    noteSource(h.source, note, L === activeLayer(), r.ms);
     out.push({ dem: r.dem, name: `${r.label} · hatch`,
       spacingMM: h.spacingMM, angleDeg: h.angleDeg,
       invert: h.invert, floor: h.floor, pass: h.pass });
