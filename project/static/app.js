@@ -574,6 +574,9 @@ function syncLayer() {
   $("gMax").value = String(g.max);
   $("gMin").value = String(g.min);
   $("gMinAbs").value = String(g.minAbs);
+  $("gStylePlus").value = g.stylePlus;
+  $("gStyleMinus").value = g.styleMinus;
+  $("gHatchMM").value = String(g.hatchMM);
   $("gPassPlus").value = g.passPlus;
   $("gPassMinus").value = g.passMinus;
   // ── hatching ──
@@ -716,7 +719,9 @@ function buildSymbols() {
     out.push({ dem: r.dem, name: `${r.label} · circles`,
       signed: g.signed, across: g.across,
       minFraction: g.min / 100, maxFraction: g.max / 100,
-      minAbs: g.minAbs, passPlus: g.passPlus, passMinus: g.passMinus });
+      minAbs: g.minAbs, passPlus: g.passPlus, passMinus: g.passMinus,
+      stylePlus: g.stylePlus, styleMinus: g.styleMinus,
+      hatchMM: g.hatchMM, hatchAngle: g.hatchAngle });
   }
   return out;
 }
@@ -875,6 +880,9 @@ function gather() {
     g.max = Math.min(100, Math.max(5, +$("gMax").value || 90));
     g.min = Math.min(90, Math.max(0, +$("gMin").value || 0));
     g.minAbs = Math.max(0, +$("gMinAbs").value || 0);
+    g.stylePlus = $("gStylePlus").value;
+    g.styleMinus = $("gStyleMinus").value;
+    g.hatchMM = Math.min(5, Math.max(0.2, +$("gHatchMM").value || 0.6));
     g.passPlus = $("gPassPlus").value;
     g.passMinus = $("gPassMinus").value;
     const h = L.hatch || (L.hatch = defaultHatch());
@@ -1409,7 +1417,12 @@ function defaultMat() {
 function defaultGrad() {
   return { enabled: false, source: "self", signed: true, across: 40,
     max: 90, min: 12, minAbs: 0,
-    passPlus: "DLF-00_engrave", passMinus: "DLF-02_score_medium" };
+    // ⚠️ THE SIGN IS A DIFFERENCE IN GEOMETRY, NOT ONLY IN PASS. Added ground
+    // is a HATCHED symbol, excavated ground a bare RING — drawn that way in the
+    // file, so the distinction survives a machine whose engrave pass does not
+    // rasterise closed paths. On material there is no colour to fall back on.
+    stylePlus: "hatched", styleMinus: "outline", hatchMM: 0.6, hatchAngle: 45,
+    passPlus: "DLF-02_score_medium", passMinus: "DLF-02_score_medium" };
 }
 
 /**

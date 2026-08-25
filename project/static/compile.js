@@ -26,7 +26,7 @@ import { textStrokes, measure, setLettering } from "./stroke-font.js";
 import { stats } from "./dem.js";
 import { markGeometry, uncertaintyMM } from "./photos.js";
 import { vectorHalftone, tripleHalftone, assertExportable, CHANNELS } from "./halftone.js";
-import { symbolLegend, symbolField, signedSymbolField, strideFor } from "./symbols.js";
+import { symbolLegend, symbolField, signedSymbolField, strideFor, hatchCircle } from "./symbols.js";
 import { applyStyle, modulatedDash, LINE_STYLES, styleLabel } from "./linestyle.js";
 import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
@@ -551,8 +551,17 @@ export function compile(input) {
     // edge is clipped to the part that fits; a circle entity cannot be — an
     // arc of a value-circle would read as a smaller value. One that would
     // cross the sheet edge is dropped whole, and the report counts the drops.
-    let dropped = 0;
-    const putC = (sy, layer) => {
+    // ⚠️ THE FILL IS GEOMETRY, NOT A PASS SETTING (Marc, 2026-08-25). Ground
+    // that was ADDED reads as a hatched symbol and ground that was EXCAVATED as
+    // a bare ring, and both are drawn that way in the file rather than left to
+    // the machine's engrave pass to fill or not. See hatchCircle: "filled" used
+    // to be true only on screen.
+    const styleOf = (v, dflt) => (["hatched", "outline", "engraved"].includes(v) ? v : dflt);
+    const stylePlus = styleOf(spec.stylePlus, "hatched");
+    const styleMinus = styleOf(spec.styleMinus, "outline");
+    const hatchMM = spec.hatchMM > 0 ? spec.hatchMM : 0.6;
+    let dropped = 0, chords = 0;
+    const putC = (sy, layer, style) => {
       let n2 = 0;
       for (const q of sy) {
         const cx = sheet.X(q.x), cy = sheet.Y(q.y), r = sheet.L(q.r);
@@ -561,6 +570,15 @@ export function compile(input) {
           dropped++; continue;
         }
         circles.push({ cx, cy, r, layer });
+        if (style === "hatched") {
+          // ⚠️ 0.3 mm minimum chord — the same runt floor the hatch field keeps,
+          // and the same guess, waiting on the same coupon.
+          for (const c of hatchCircle(cx, cy, r, hatchMM,
+            { angleDeg: spec.hatchAngle ?? 45, minLength: 0.3 })) {
+            add(c, layer);
+            chords++;
+          }
+        }
         n2++;
       }
       return n2;
@@ -569,15 +587,15 @@ export function compile(input) {
     if (spec.signed !== false) {
       const f = signedSymbolField(sd.z, frame,
         { stride, minFraction: minF, maxFraction: maxF, minAbs: spec.minAbs || 0 });
-      plusN = putC(f.plus, passPlus);
-      minusN = putC(f.minus, passMinus);
+      plusN = putC(f.plus, passPlus, stylePlus);
+      minusN = putC(f.minus, passMinus, styleMinus);
       hi = f.hi;
     } else {
       // Unsigned: one set on the fill pass, the plain lo..hi mapping.
       const st2 = stats(sd);
       lo = st2.min; hi = st2.max;
       plusN = putC(symbolField(sd.z, frame,
-        { stride, minFraction: minF, maxFraction: maxF }), passPlus);
+        { stride, minFraction: minF, maxFraction: maxF }), passPlus, stylePlus);
     }
     const count = plusN + minusN;
     const fullMM = sheet.L((stride * sd.cell * maxF) / 2);
@@ -613,6 +631,7 @@ export function compile(input) {
     symbolReports.push({
       name: spec.name || sd.name || "circle grid",
       signed, count, plus: plusN, minus: minusN, dropped,
+      stylePlus, styleMinus: signed ? styleMinus : null, chords, hatchMM,
       hi: +hi.toFixed(2), lo: +lo.toFixed(2),
       spacingM: +(stride * sd.cell).toFixed(2),
       largestMM: +(2 * fullMM).toFixed(1),                     // diameters — the
@@ -623,9 +642,15 @@ export function compile(input) {
       warnings.push(`${spec.name || "circle grid"}: no circles — every value is zero, `
         + `unmeasured, or under the ${fmt(spec.minAbs || 0)} dead zone.`);
     }
-    if (signed && count && passPlus === passMinus) {
-      warnings.push(`${spec.name || "circle grid"}: fill and cut are on the SAME pass — `
-        + `on the sheet the two directions of change will be indistinguishable.`);
+    // ⚠️ WHAT MUST DIFFER IS WHAT SURVIVES ONTO MATERIAL. The pass alone is a
+    // colour on screen and a power setting at the machine; it is not a mark.
+    // Two signs on one pass are perfectly readable when one is hatched and the
+    // other is a bare ring, and perfectly UNreadable when they are not — so the
+    // warning fires on the conjunction, never on the pass alone.
+    if (signed && count && passPlus === passMinus && stylePlus === styleMinus) {
+      warnings.push(`${spec.name || "circle grid"}: fill and cut share BOTH the same pass and `
+        + `the same symbol style — nothing on the material will tell the two directions of `
+        + `change apart. Hatch one of them, or move one to another pass.`);
     }
     const cutPass = (p) => p === "DLF-04_cut_inner" || p === "DLF-05_cut_outer";
     if ((plusN && cutPass(passPlus)) || (minusN && cutPass(passMinus))) {
@@ -636,6 +661,15 @@ export function compile(input) {
     if (count > 4000) {
       warnings.push(`${spec.name || "circle grid"}: ${count} circles is a heavy job — `
         + `fewer circles across, or a dead zone, brings it down.`);
+    }
+    // ⚠️ A HATCHED SYMBOL IS MANY MARKS, NOT ONE. The chords are stated
+    // separately from the circles because they dominate the job: a field of
+    // 1,200 hatched symbols is thousands of extra head moves, and the count has
+    // to precede the file like every other count in this tool.
+    if (chords) {
+      warnings.push(`${spec.name || "circle grid"}: the hatched symbols add ${chords} fill `
+        + `lines at ${fmt(hatchMM)} mm — a hatched circle is many marks, not one. `
+        + `Wider fill spacing, or an outline style, brings it down.`);
     }
   }
 
@@ -1164,10 +1198,16 @@ export function reportText(drawing, extra = {}) {
   for (const g of (r.symbols || [])) {
     L.push(`circle grid "${g.name}": ${g.count} circles at ${g.spacingM} m spacing, `
       + `Ø ${g.smallestMM}–${g.largestMM} mm`);
+    const styleWord = (s) => (s === "hatched" ? "hatched" : s === "outline" ? "outline only"
+      : "solid engrave");
     L.push(g.signed
-      ? `          fill (+) ${g.plus} filled dots on ${g.passPlus}; `
-        + `cut (−) ${g.minus} open rings on ${g.passMinus}; full scale ±${g.hi}`
-      : `          ${g.plus} circles on ${g.passPlus}, values ${g.lo} … ${g.hi}`);
+      ? `          fill (+) ${g.plus} ${styleWord(g.stylePlus)} on ${g.passPlus}; `
+        + `cut (−) ${g.minus} ${styleWord(g.styleMinus)} on ${g.passMinus}; full scale ±${g.hi}`
+      : `          ${g.plus} ${styleWord(g.stylePlus)} on ${g.passPlus}, values ${g.lo} … ${g.hi}`);
+    if (g.chords) {
+      L.push(`          plus ${g.chords} fill lines at ${g.hatchMM} mm — a hatched circle is `
+        + `many marks, not one`);
+    }
     if (g.dropped) {
       L.push(`          ${g.dropped} dropped whole at the sheet edge — a clipped circle `
         + `would read as a smaller value`);

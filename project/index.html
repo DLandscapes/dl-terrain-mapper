@@ -696,10 +696,30 @@ details.panel[open] > summary .sec-badge { display: none; }
     <label class="field"><span>Values</span>
       <select id="gSource"></select></label>
     <label class="check"><input type="checkbox" id="gSigned" checked>
-      Tell cut from fill — the sign picks the pass</label>
-    <p class="why">Fill (+) on the engrave pass is a <b>filled dot</b>; cut (−) on a score
-      pass is an <b>open ring</b>. Both sides share one scale — the largest magnitude —
-      so equal movement is an equal circle, whichever way the ground went.</p>
+      Tell cut from fill — the sign picks the symbol</label>
+    <label class="field"><span>Fill (+), ground added</span>
+      <select id="gStylePlus">
+        <option value="hatched">Hatched circle</option>
+        <option value="outline">Outline only</option>
+        <option value="engraved">Solid — filled by the engrave pass</option>
+      </select></label>
+    <label class="field"><span>Cut (−), ground excavated</span>
+      <select id="gStyleMinus">
+        <option value="outline">Outline only</option>
+        <option value="hatched">Hatched circle</option>
+        <option value="engraved">Solid — filled by the engrave pass</option>
+      </select></label>
+    <label class="field"><span>Hatch spacing (mm)</span>
+      <input type="number" id="gHatchMM" min="0.2" max="5" step="0.1" value="0.6"></label>
+    <p class="why">⚠️ <b>The difference is drawn, not left to the machine.</b> A circle on the
+      engrave pass looks solid on screen, but what the file carries is an outline — whether it
+      comes out filled depends on that pass being set to raster in JobControl. Hatching puts
+      the distinction in the geometry, where no machine setting can lose it. On material there
+      is no colour to fall back on.</p>
+    <p class="why">Both sides share one scale — the largest magnitude either way — so equal
+      movement is an equal circle whichever way the ground went, growing from nothing at zero
+      out to full size at the extreme. ⚠️ A hatched circle is many marks, not one; the fill-line
+      count is reported before you export.</p>
     <label class="field"><span>Circles across the sheet</span>
       <input type="number" id="gAcross" min="4" max="200" step="1" value="40"></label>
     <label class="field"><span>Largest circle — % of the spacing</span>

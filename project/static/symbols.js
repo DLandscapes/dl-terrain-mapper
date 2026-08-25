@@ -179,6 +179,52 @@ export function signedSymbolField(grid, frame, opts = {}) {
 }
 
 /**
+ * Parallel chords filling a circle — a VECTOR fill for a symbol.
+ *
+ * ⚠️ THIS EXISTS BECAUSE "FILLED" WAS ONLY EVER TRUE ON SCREEN. A circle on the
+ * engrave pass is drawn solid by the preview and by the SVG writer, but what
+ * the DXF actually carries is a CIRCLE entity — an outline. Whether it comes
+ * out solid depends on the machine's engrave pass being configured to raster
+ * closed paths, which is a property of somebody's JobControl setup and not of
+ * the drawing. On a machine set up differently, cut and fill both arrive as
+ * rings and the grading plan says nothing at all.
+ *
+ * Hatching the circle puts the distinction in the geometry, where it cannot be
+ * lost: a hatched symbol is hatched on any machine that can follow a line.
+ *
+ * ⚠️ THE CHORDS ARE CENTRED ON THE CIRCLE, so the smallest symbol still gets
+ * the diameter through it rather than falling between two lines and coming out
+ * empty — which would read as a cut symbol on a fill.
+ *
+ * @param {number} cx @param {number} cy @param {number} r  sheet mm
+ * @param {number} spacing  line-to-line, sheet mm
+ * @param {{angleDeg?:number, minLength?:number}} [o]
+ * @returns {Float64Array[]} chords, x,y,x,y
+ */
+export function hatchCircle(cx, cy, r, spacing, o = {}) {
+  /** @type {Float64Array[]} */
+  const out = [];
+  if (!(r > 0) || !(spacing > 0)) return out;
+  const a = ((o.angleDeg ?? 45) * Math.PI) / 180;
+  const ux = Math.cos(a), uy = Math.sin(a);          // along a chord
+  const nx = -uy, ny = ux;                           // across the chords
+  // ⚠️ A CHORD SHORTER THAN THE MINIMUM MARK IS A DWELL, not a short line. The
+  // ones near the rim are always the shortest, and on a small symbol they are
+  // all rim.
+  const minLen = o.minLength ?? 0;
+  const k = Math.floor(r / spacing);
+  for (let i = -k; i <= k; i++) {
+    const d = i * spacing;
+    const half = Math.sqrt(Math.max(0, r * r - d * d));
+    if (half * 2 < minLen || half <= 1e-9) continue;
+    const bx = cx + nx * d, by = cy + ny * d;
+    out.push(Float64Array.of(bx - ux * half, by - uy * half,
+                             bx + ux * half, by + uy * half));
+  }
+  return out;
+}
+
+/**
  * The legend's reference circles.
  *
  * ⚠️ ROUND VALUES, NOT ROUND RADII. Equally spaced circles are easy to draw and
