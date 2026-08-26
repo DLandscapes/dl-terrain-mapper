@@ -30,8 +30,10 @@ import { PASS_COLOURS, PASS_LABELS, passColour } from "./dxf.js";
 import { niceInterval } from "./contours.js";
 import { slopeDegrees } from "./symbols.js";
 import { readShapefile } from "./shapefile.js";
+import { readDBF, assertPairs, fieldRange } from "./dbf.js";
 import { FILL_PATTERNS, PATTERN_ORDER } from "./patterns.js";
-import { FEATURE_DEFAULTS, FEATURE_LINETYPES, LINETYPE_ORDER } from "./features.js";
+import { FEATURE_DEFAULTS, FEATURE_LINETYPES, LINETYPE_ORDER,
+  POINT_SYMBOLS, SYMBOL_ORDER } from "./features.js";
 import { ruggedness, roughness, wetnessIndex, indexNote } from "./terrain.js";
 
 const $ = (id) => /** @type {any} */ (document.getElementById(id));
@@ -1608,6 +1610,22 @@ wireDrop("dropDEM", "fileDEM", async (files) => {
 const FEATURE_KIND_LABEL = { point: "points", line: "lines", polygon: "areas" };
 
 /** Fill the pattern pickers once, grouped exactly as the Slicer groups them. */
+function fillSymbolPicker() {
+  const sel = $("ftSymbol");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const key of SYMBOL_ORDER) {
+    const o = document.createElement("option");
+    o.value = key;
+    // ⚠️ THE PICKER SAYS WHICH SYMBOLS CAN CARRY A DIRECTION, because "turn by
+    // an attribute" silently does nothing on a circle and a reader would blame
+    // the data rather than the shape.
+    o.textContent = POINT_SYMBOLS[key].label
+      + (POINT_SYMBOLS[key].directional ? "" : "  (no direction)");
+    sel.appendChild(o);
+  }
+}
+
 function fillPatternPickers() {
   const groups = {};
   for (const key of PATTERN_ORDER) {
@@ -1647,6 +1665,40 @@ function fillPatternPickers() {
 }
 
 const activeFeature = () => state.features[state.activeFeature] || null;
+
+/**
+ * Fill one attribute picker from the layer's numeric columns.
+ *
+ * ⚠️ ONLY NUMERIC COLUMNS THAT ACTUALLY HOLD NUMBERS. A species name cannot
+ * size a circle, and a numeric column of all nulls is a picker entry that
+ * produces an empty drawing — `readDBF` filters both out. If there is no .dbf
+ * the list is empty and says so, rather than looking broken.
+ */
+function fillAttrPicker(id, f, current) {
+  const sel = $(id);
+  if (!sel) return;
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = !f || !f.rows ? "— no .dbf loaded —"
+    : (f.numericFields || []).length ? "— fixed, not by a value —"
+    : "— no numeric columns —";
+  sel.appendChild(none);
+  for (const name of (f && f.numericFields) || []) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  }
+  sel.value = current || "";
+  if (sel.value !== (current || "")) sel.value = "";
+}
+
+/** Suggest the field's own range, so the controls open on something usable. */
+function suggestRange(f, field, loId, hiId) {
+  if (!f || !f.rows || !field) return;
+  const r = fieldRange(f.rows, field);
+  if (r.n) { $(loId).value = String(+r.lo.toFixed(3)); $(hiId).value = String(+r.hi.toFixed(3)); }
+}
 
 function paintFeatureList() {
   setTimeout(syncGrip, 0);
@@ -1697,9 +1749,25 @@ function syncFeature() {
     $("ftOutline").checked = st.outline !== false;
   }
   if (f.kind === "point") {
+    $("ftSymbol").value = st.symbol || "circle";
     $("ftRadius").value = String(st.radiusMM);
     $("ftPointFill").value = st.pattern;
     $("ftPointSpacing").value = String(st.spacingMM);
+    const sb = st.sizeBy || (st.sizeBy = { ...FEATURE_DEFAULTS.point.sizeBy });
+    fillAttrPicker("ftSizeField", f, sb.field);
+    $("ftSizeLo").value = String(sb.lo); $("ftSizeHi").value = String(sb.hi);
+    $("ftSizeMin").value = String(sb.minMM); $("ftSizeMax").value = String(sb.maxMM);
+    $("ftSizeMode").value = sb.mode || "area";
+    const rb = st.rotateBy || (st.rotateBy = { ...FEATURE_DEFAULTS.point.rotateBy });
+    fillAttrPicker("ftRotField", f, rb.field);
+    $("ftRotMode").value = rb.mode || "degrees";
+    $("ftRotOffset").value = String(rb.offsetDeg || 0);
+  }
+  if (f.kind === "polygon") {
+    const db = st.densityBy || (st.densityBy = { ...FEATURE_DEFAULTS.polygon.densityBy });
+    fillAttrPicker("ftDensField", f, db.field);
+    $("ftDensLo").value = String(db.lo); $("ftDensHi").value = String(db.hi);
+    $("ftDensMin").value = String(db.minMM); $("ftDensMax").value = String(db.maxMM);
   }
   $("ftLinetype").value = st.linetype;
   $("ftScale").value = String(st.linetypeScale);
@@ -1721,16 +1789,49 @@ function gatherFeature() {
     st.outline = $("ftOutline").checked;
   }
   if (f.kind === "point") {
+    st.symbol = $("ftSymbol").value;
     st.radiusMM = Math.min(30, Math.max(0.3, +$("ftRadius").value || 2));
     st.pattern = $("ftPointFill").value;
     st.spacingMM = Math.min(10, Math.max(0.2, +$("ftPointSpacing").value || 1));
+    const sb = st.sizeBy;
+    const prev = sb.field;
+    sb.field = $("ftSizeField").value || null;
+    // Choosing a field for the first time fills the range from the data, so the
+    // controls never open on 0..0 — which would draw every symbol the same size
+    // and look like the feature does not work.
+    if (sb.field && sb.field !== prev) suggestRange(f, sb.field, "ftSizeLo", "ftSizeHi");
+    sb.lo = +$("ftSizeLo").value || 0;
+    sb.hi = +$("ftSizeHi").value || 0;
+    sb.minMM = Math.max(0.2, +$("ftSizeMin").value || 1.2);
+    sb.maxMM = Math.max(sb.minMM, +$("ftSizeMax").value || 5);
+    sb.mode = $("ftSizeMode").value;
+    const rb = st.rotateBy;
+    const prevR = rb.field;
+    rb.field = $("ftRotField").value || null;
+    if (rb.field && rb.field !== prevR) {
+      const r = f.rows ? fieldRange(f.rows, rb.field) : null;
+      if (r && r.n) { rb.lo = r.lo; rb.hi = r.hi; }
+    }
+    rb.mode = $("ftRotMode").value;
+    rb.offsetDeg = +$("ftRotOffset").value || 0;
+  }
+  if (f.kind === "polygon") {
+    const db = st.densityBy;
+    const prev = db.field;
+    db.field = $("ftDensField").value || null;
+    if (db.field && db.field !== prev) suggestRange(f, db.field, "ftDensLo", "ftDensHi");
+    db.lo = +$("ftDensLo").value || 0;
+    db.hi = +$("ftDensHi").value || 0;
+    db.minMM = Math.max(0.3, +$("ftDensMin").value || 0.8);
+    db.maxMM = Math.max(db.minMM, +$("ftDensMax").value || 5);
   }
 }
 
 /** The feature specs the compiler takes. Geometry stays in MAP units here. */
 function buildFeatures() {
   return state.features.map((f) => ({
-    kind: f.kind, name: f.name, rings: f.rings, points: f.points, style: f.style,
+    kind: f.kind, name: f.name, rings: f.rings, points: f.points,
+    rows: f.rows, style: f.style,
   }));
 }
 
@@ -1747,20 +1848,54 @@ function buildFeatures() {
 async function loadFeatureFiles(files, expected) {
   const info = $("featInfo");
   const added = [], notes = [];
-  for (const file of [...files].sort((a, b) =>
-    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }))) {
-    if (!/\.shp$/i.test(file.name)) {
-      notes.push(`${file.name} is not a .shp — a shapefile is several files sharing a name, `
-        + `and only .shp holds the geometry`);
+  // ⚠️ THE .dbf IS PAIRED BY BASENAME, and it is where every attribute lives.
+  // `.shp` holds shapes and nothing else, so a user who drops only the .shp gets
+  // geometry with no values to style by — which works, and silently offers an
+  // empty attribute picker. Dropping both together is the whole point.
+  const byStem = new Map();
+  for (const f of files) {
+    const stem = f.name.replace(/\.[^.]+$/, "").toLowerCase();
+    const ext = (f.name.match(/\.([^.]+)$/) || [, ""])[1].toLowerCase();
+    if (!byStem.has(stem)) byStem.set(stem, {});
+    byStem.get(stem)[ext] = f;
+  }
+  const stems = [...byStem.keys()].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  for (const stem of stems) {
+    const pair = byStem.get(stem);
+    const file = pair.shp;
+    if (!file) {
+      notes.push(`${stem}: no .shp among the files dropped — a shapefile is several files `
+        + `sharing a name, and only .shp holds the geometry`);
       continue;
     }
     try {
       const r = readShapefile(await file.arrayBuffer(), { name: file.name });
+      // Attributes, if the .dbf came too.
+      let rows = null, numericFields = [], fieldNames = [];
+      if (pair.dbf) {
+        try {
+          const t = readDBF(await pair.dbf.arrayBuffer(), { name: pair.dbf.name });
+          const shapes = r.kind === "point" ? r.points.length : r.rings.length;
+          assertPairs(t.rows, shapes, file.name);
+          rows = t.rows;
+          numericFields = t.numeric;
+          fieldNames = t.fields.map((f) => f.name);
+          if (t.deleted) {
+            notes.push(`${pair.dbf.name}: ${t.deleted} record${t.deleted === 1 ? " was" : "s were"} `
+              + `marked deleted and skipped`);
+          }
+          for (const n of t.notes) notes.push(`${pair.dbf.name}: ${n}`);
+        } catch (e) { notes.push(e.message); }
+      } else {
+        notes.push(`${file.name}: no .dbf was dropped with it, so there are no attributes to `
+          + `style by. Drop the .shp and .dbf together to size or turn symbols by a value.`);
+      }
       const style = JSON.parse(JSON.stringify(FEATURE_DEFAULTS[r.kind]));
       style.pass = NEXT_PASS[state.features.length % NEXT_PASS.length];
       state.features.push({
         id: state.nextId++, name: file.name.replace(/\.[^.]+$/, ""), kind: r.kind,
-        rings: r.rings, points: r.points,
+        rings: r.rings, points: r.points, rows, numericFields, fieldNames,
         count: r.kind === "point" ? r.points.length : r.rings.length,
         style,
       });
@@ -1813,9 +1948,20 @@ $("ftRemove").addEventListener("click", () => {
   syncFeature(); paintFeatureList(); recompile();
 });
 for (const id of ["ftPass", "ftPattern", "ftSpacing", "ftRotation", "ftOutline",
-  "ftRadius", "ftPointFill", "ftPointSpacing", "ftLinetype", "ftScale"]) {
+  "ftRadius", "ftPointFill", "ftPointSpacing", "ftLinetype", "ftScale",
+  "ftSymbol", "ftSizeField", "ftSizeLo", "ftSizeHi", "ftSizeMin", "ftSizeMax",
+  "ftSizeMode", "ftRotField", "ftRotMode", "ftRotOffset",
+  "ftDensField", "ftDensLo", "ftDensHi", "ftDensMin", "ftDensMax"]) {
   const el = $(id);
-  if (el) el.addEventListener("input", () => { gatherFeature(); paintFeatureList(); recompile(); });
+  if (el) {
+    el.addEventListener("input", () => {
+      gatherFeature();
+      // A field choice rewrites the range boxes, so the panel has to catch up.
+      if (/Field$/.test(id)) syncFeature();
+      paintFeatureList();
+      recompile();
+    });
+  }
 }
 
 // ── the tile boundary ───────────────────────────────────────────────────────
@@ -2137,6 +2283,7 @@ $("expReport").addEventListener("click", () => {
 // ⚠️ AFTER every handler above has been attached, and after the pass pickers
 // have been given their colour chips — the folds MOVE those nodes, so anything
 // that reaches for them by id must have run first.
+fillSymbolPicker();
 fillPatternPickers();
 syncFeature();
 paintFeatureList();

@@ -419,11 +419,63 @@ details.panel[open] > summary .sec-badge { display: none; }
             <input type="number" id="ftRotation" min="0" max="180" step="5" value="45"></label>
           <label class="check"><input type="checkbox" id="ftOutline" checked>
             Draw the outline too</label>
+
+          <div class="subhead">Density by an attribute</div>
+          <p class="why">⚠️ Inverted on purpose: a <b>high</b> value gives a <b>tighter</b>
+            fill, because density is what a reader sees. Mapped the obvious way round, the
+            densest planting would come out as the emptiest hatch.</p>
+          <label class="field"><span>Field</span><select id="ftDensField"></select></label>
+          <label class="field"><span>From</span>
+            <input type="number" id="ftDensLo" step="any" value="0"></label>
+          <label class="field"><span>To</span>
+            <input type="number" id="ftDensHi" step="any" value="0"></label>
+          <label class="field"><span>Tightest (mm)</span>
+            <input type="number" id="ftDensMin" min="0.3" step="0.1" value="0.8"></label>
+          <label class="field"><span>Loosest (mm)</span>
+            <input type="number" id="ftDensMax" min="0.4" step="0.1" value="5"></label>
         </div>
 
         <div id="ftPointOnly">
+          <label class="field"><span>Symbol</span><select id="ftSymbol"></select></label>
           <label class="field"><span>Symbol radius (mm)</span>
             <input type="number" id="ftRadius" min="0.3" max="30" step="0.1" value="2"></label>
+
+          <div class="subhead">Size by an attribute</div>
+          <p class="why">Pick a numeric column from the .dbf and the symbol grows with it.
+            ⚠️ Scaled by <b>area</b>, not radius: a circle of twice the radius covers four
+            times the paper, so scaling the radius directly makes every large value look
+            several times bigger than it is.</p>
+          <label class="field"><span>Field</span><select id="ftSizeField"></select></label>
+          <label class="field"><span>From</span>
+            <input type="number" id="ftSizeLo" step="any" value="0"></label>
+          <label class="field"><span>To</span>
+            <input type="number" id="ftSizeHi" step="any" value="0"></label>
+          <label class="field"><span>Smallest (mm)</span>
+            <input type="number" id="ftSizeMin" min="0.2" step="0.1" value="1.2"></label>
+          <label class="field"><span>Largest (mm)</span>
+            <input type="number" id="ftSizeMax" min="0.3" step="0.1" value="5"></label>
+          <label class="field"><span>Scaling</span>
+            <select id="ftSizeMode">
+              <option value="area">Area — honest for quantities</option>
+              <option value="linear">Radius — the Hadseløya convention</option>
+            </select></label>
+          <p class="why">Set <b>From</b> to 0 for true proportionality, where a value of
+            nothing is a symbol of nothing. Otherwise the range is graded between the two
+            sizes.</p>
+
+          <div class="subhead">Turn by an attribute</div>
+          <p class="why">⚠️ Only the directional symbols show it — turning a circle is a null
+            operation. A field already in <b>degrees</b> (an aspect, a bearing) is used as is,
+            clockwise from north; any other field has no angular meaning, so its range is
+            spread over a full turn and the result is a pattern rather than a direction.</p>
+          <label class="field"><span>Field</span><select id="ftRotField"></select></label>
+          <label class="field"><span>Read as</span>
+            <select id="ftRotMode">
+              <option value="degrees">Degrees, clockwise from north</option>
+              <option value="range">Its range, spread over a full turn</option>
+            </select></label>
+          <label class="field"><span>Offset (°)</span>
+            <input type="number" id="ftRotOffset" step="5" value="0"></label>
           <label class="field"><span>Inside the symbol</span>
             <select id="ftPointFill"></select></label>
           <label class="field"><span>Inside spacing (mm)</span>
@@ -859,10 +911,10 @@ details.panel[open] > summary .sec-badge { display: none; }
 <input type="file" id="filePhotos" accept="image/jpeg,image/*" multiple hidden>
 <input type="file" id="fileImage" accept=".tif,.tiff,image/*" hidden>
 <input type="file" id="fileStyle" accept=".qml,.sld,.xml" hidden>
-<input type="file" id="fileClip" accept=".shp" multiple hidden>
-<input type="file" id="fileFeatPolygon" accept=".shp" multiple hidden>
-<input type="file" id="fileFeatLine" accept=".shp" multiple hidden>
-<input type="file" id="fileFeatPoint" accept=".shp" multiple hidden>
+<input type="file" id="fileClip" accept=".shp,.dbf" multiple hidden>
+<input type="file" id="fileFeatPolygon" accept=".shp,.dbf" multiple hidden>
+<input type="file" id="fileFeatLine" accept=".shp,.dbf" multiple hidden>
+<input type="file" id="fileFeatPoint" accept=".shp,.dbf" multiple hidden>
 
 <script type="module" src="static/app.js"></script>
 </body>

@@ -749,7 +749,8 @@ export function compile(input) {
       return { x: X, y: Y };
     });
     const f = buildFeature(
-      { kind: spec.kind, rings: mmRings, points: mmPoints, style: spec.style, name: spec.name },
+      { kind: spec.kind, rings: mmRings, points: mmPoints, rows: spec.rows,
+        style: spec.style, name: spec.name },
       { sheet, tracer: { traceContours }, minLength: 0.3 });
     for (const p of f.paths) {
       // Clipped to the sheet like every other translation - a feature from a
