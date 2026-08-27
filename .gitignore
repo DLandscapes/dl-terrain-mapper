@@ -13,7 +13,12 @@ __pycache__/
 *.pyc
 
 # local editor/agent config, machine-specific paths
-/.claude/
+# ⚠️ NO LEADING SLASH. `/.claude/` is anchored to the repository ROOT, so it
+# never matched `project/.claude/` — which was therefore committed in v0.1.0 and
+# has been public ever since, publishing the absolute path of Marc's own disk.
+# Same class as the quoted-path trap above: a pattern that silently matches
+# nothing. Bare `.claude/` matches at every level.
+.claude/
 
 # OS noise
 Thumbs.db

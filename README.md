@@ -31,9 +31,9 @@ plates cannot disagree if there was only ever one field.
 ## Getting started
 
 **What you need:** a terrain model as a **GeoTIFF** (`.tif`) — export one from
-QGIS. Optionally JPEG photographs with GPS, and a `.qml`/`.sld` style. You can
-try everything without your own data: there is a **demonstration site** button
-that builds a landform in code.
+QGIS. Optionally shapefiles or GML for surveyed features, and JPEG photographs
+with GPS. You can try everything without your own data: there is a
+**demonstration site** button that builds a landform in code.
 
 ### The quickest way — in your browser
 
@@ -85,7 +85,6 @@ with its own source, its own settings and its own laser pass.
 |---|---|
 | **Contours** | a line's **position** — continuous, labelled, index lines heavier |
 | **Hachures** | strokes down the **fall line**, longer where it is steeper |
-| **Modulated contours** | the **ink** along a contour, so one line carries a second quantity |
 | **Circle grid** | a symbol's **size**; the sign becomes its form — a grading plan's cut and fill |
 | **Hatching** | the **density** of ink along parallel scanlines |
 | **Sections** | height against **distance** along a cut, engraved on the line it was taken from |
@@ -100,7 +99,8 @@ disturbance drawing, and the circle grid turns that into cut and fill.
 
 - **Reads real files.** GeoTIFF striped or tiled, uint/int/float, Deflate, LZW
   and PackBits, predictors 2 and 3, GDAL nodata, GeoKeys. JPEG EXIF with GPS
-  and bearings. QGIS `.qml` and `.sld`, translated with a decision log.
+  and bearings. Shapefiles with their `.dbf` attributes and `.prj`, and GML 2
+  and 3 — which carries its geometry, attributes and CRS in one file.
 - **Multiple rasters as layers** — a DTM under a DSM, or the same ground in two
   years. Drop or pick several at once; they load in name order.
 - **Two materials** — a threshold becomes either a window cut through the base

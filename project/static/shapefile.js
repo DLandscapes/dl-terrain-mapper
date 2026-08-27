@@ -31,6 +31,40 @@ const TYPES = {
   21: "pointM", 23: "polylineM", 25: "polygonM", 28: "multipointM",
 };
 
+/**
+ * What a `.prj` says the shapefile's coordinates are in.
+ *
+ * ⚠️ THIS IS NAMING, NOT REPROJECTION. The tool does not move anyone's
+ * geometry: it reads the label so it can say "this is EPSG:25832 and your
+ * raster is EPSG:25833" instead of the generic "does not overlap". A CRS
+ * mismatch is the failure that looks like a broken tool — the layer simply is
+ * not where the ground is — and the whole cost of diagnosing it is knowing both
+ * names at once.
+ *
+ * ⚠️ THE AUTHORITY CODE IS TRUSTED ONLY AT THE END. WKT nests AUTHORITY tags at
+ * every level — the spheroid, the datum, the prime meridian, the unit — and the
+ * FIRST one in the file belongs to whichever of those came first, not to the
+ * coordinate system. Esri writes .prj files with no AUTHORITY at all, which is
+ * why the name is kept as a fallback and null is an honest answer.
+ *
+ * @param {string} text the .prj's contents
+ * @returns {{name:string|null, epsg:string|null}}
+ */
+export function readPRJ(text) {
+  const s = String(text || "").trim();
+  if (!s) return { name: null, epsg: null };
+  const name = (/^\s*(?:PROJCS|GEOGCS|PROJCRS|GEOGCRS)\s*\[\s*"([^"]+)"/i.exec(s) || [])[1] || null;
+  // The last AUTHORITY/ID in the string is the outermost one — the CRS's own.
+  let epsg = null;
+  const auth = [...s.matchAll(/AUTHORITY\s*\[\s*"EPSG"\s*,\s*"?(\d+)"?\s*\]/gi)];
+  if (auth.length) epsg = `EPSG:${auth[auth.length - 1][1]}`;
+  else {
+    const id = [...s.matchAll(/\bID\s*\[\s*"EPSG"\s*,\s*(\d+)\s*\]/gi)];
+    if (id.length) epsg = `EPSG:${id[id.length - 1][1]}`;
+  }
+  return { name, epsg };
+}
+
 /** Types whose records carry parts + points in the layout we can walk. */
 const AREAL = new Set([3, 5, 13, 15, 23, 25]);
 /** Single-point types: type, X, Y, then optional Z/M this reader ignores. */

@@ -58,10 +58,10 @@
 #sidebar header h1 { font-size: 1.02rem; }
 #sidebar .sub { font-size: .72rem; }
 
-/* ⚠️ ONE TOGGLE, ONE PLACE, TWO STATES. The chip is positioned onto the exact
-   rect the fold button occupied, so folding and unfolding happen under the
-   same pixel — which means they must be the same size, or the chip's own edge
-   lands under the cursor. Same rule the sibling keeps. */
+/* ⚠️ ONE TOGGLE, ONE PLACE, TWO STATES. They occupy the same slot in
+   #viewtools, so folding and unfolding happen under the same pixel — which
+   means they must be the same size, or the chip's own edge lands under a cursor
+   that has not moved. Same rule the sibling keeps. */
 #menu-chip, #menu-min {
   box-sizing: border-box; width: 30px; height: 26px;
   display: flex; align-items: center; justify-content: center;
@@ -71,8 +71,9 @@
   background: var(--sheet); color: var(--ink-soft);
 }
 #menu-chip:hover, #menu-min:hover { color: var(--ink); border-color: var(--ink-soft); }
-#menu-chip { position: absolute; left: 12px; top: 12px; }
-#menu-min { position: absolute; right: 11px; top: 11px; }
+/* ⚠️ BOTH SIT IN #viewtools, IN THE SAME SLOT. Neither is positioned on its
+   own any more: that is what made them 1,227 px apart while a comment claimed
+   they shared a pixel. See the markup for the whole argument. */
 #menu-chip[hidden] { display: none; }
 
 /* ── the menu's width grip ────────────────────────────────────────────────
@@ -219,6 +220,15 @@ details.panel[open] > summary .sec-badge { display: none; }
   font-family: var(--font-head);
 }
 .pitem.off .n { background: var(--ink-soft); }
+/* ⚠️ THE ICON INHERITS THE SWATCH'S COLOUR, which is the sheet colour on a
+   disc filled with the layer's PASS colour — the machine operation, not a
+   colour chosen for the screen. Stroked rather than filled, at the same weight
+   as the panel icons above, so the two sets read as one drawing. */
+.pitem .n svg {
+  width: 12px; height: 12px; display: block;
+  fill: none; stroke: currentColor; stroke-width: 2.4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .pitem .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pitem .val { color: var(--ink-soft); font-size: .7rem; white-space: nowrap; }
 
@@ -226,14 +236,14 @@ details.panel[open] > summary .sec-badge { display: none; }
    Same chrome as the sidebar, deliberately: one window family, not two. */
 #readout {
   position: absolute; right: 12px; top: 12px; z-index: 4; width: 300px;
-  max-height: calc(100% - 66px);
+  max-height: calc(100% - 66px - var(--tools-h) - 10px);
   display: flex; flex-direction: column; gap: 10px; padding: 12px;
   overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable;
   border: 1px solid var(--line); border-radius: 5px;
   background: rgba(255,255,255,.94); box-shadow: 0 2px 10px rgba(0,0,0,.10);
 }
-#readout.min { width: auto; max-height: none; overflow: visible; }
-#readout.min > *:not(#readout-head) { display: none; }
+/* Folded by the one menu control, or empty because nothing is loaded yet. */
+#readout.min, #readout.empty { display: none; }
 #readout-head { display: flex; align-items: center; gap: 8px; }
 #readout-head h2 {
   flex: 1; font-family: var(--font-head); font-weight: 700; font-size: .78rem;
@@ -264,13 +274,50 @@ details.panel[open] > summary .sec-badge { display: none; }
 .pass b { color: var(--ink); font-family: var(--font-head); font-variant-numeric: tabular-nums; }
 
 /* ── viewport furniture ──────────────────────────────────────────────────── */
-/* ⚠️ THE ZOOM CONTROLS MOVED OFF THE MENU'S CORNER. They used to sit at left
-   12/top 12, which is exactly where the folded menu's chip now lands — two
-   controls under one pixel. They hang below the readout instead, on the side
-   of the window the drawing is read from. */
-#zoomer { position: absolute; right: 12px; bottom: 12px; z-index: 3; display: flex; gap: 4px; }
-#zoomer button { width: 26px; height: 26px; padding: 0; line-height: 1; font-size: .78rem; }
+/* ⚠️ THE VIEWPORT'S OWN CONTROLS, IN ONE ROW, CLEAR OF BOTH WINDOWS.
+   `--tools-gap` is the distance kept from the readout window's left edge, and
+   `right` is derived from the readout's width so the two can never be tuned
+   apart. Measured before this existed: the fold button sat at x 1239–1269,
+   INSIDE the readout's 968–1268 rect, covering its fold button by 51 px — two
+   controls a cursor could not choose between. */
+/* ⚠️ THE STRIP SITS ABOVE THE RIGHT-HAND WINDOW, NOT BESIDE IT. Beside it, the
+   strip ate 166 px of the drawing along the top edge for its whole length and
+   still had to dodge a window whose width changes. Above it, the tools are
+   right-aligned to the window they belong with, the ground underneath is
+   uninterrupted, and the vertical room this costs was already spare — the
+   window does not reach the bottom of the viewport. */
+#viewtools {
+  position: absolute; top: 12px; right: 12px;
+  z-index: 5; display: flex; align-items: center;
+  gap: var(--tools-gap); justify-content: flex-end;
+}
+:root { --tools-gap: 12px; --tools-h: 26px; }
+/* The window starts below the strip and keeps the same 12 px rhythm. */
+#readout { top: calc(12px + var(--tools-h) + 10px) !important; }
+#zoomer { display: flex; gap: 4px; }
+#zoomer button, #explainToggle {
+  width: 26px; height: 26px; padding: 0; line-height: 1; font-size: .78rem;
+}
+#explainToggle { font-family: var(--font-head); }
+/* The pressed state has to be visible, or the control is a coin toss. */
+#explainToggle[aria-pressed="true"] { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+
+/* ⚠️ EXPLANATIONS GO; WARNINGS AND STATE STAY. `.why` and `.fine` are prose a
+   reader stops needing. `.note` is a WARNING — the GPS-accuracy caution, the
+   clip caveats — and `.meta` is live output like "No raster loaded." or the
+   cutting report. Hiding either of those would turn a density preference into a
+   way of losing the thing the panel exists to tell you. */
+body.terse .why, body.terse .fine { display: none; }
 #status { bottom: 14px; white-space: nowrap; }
+#dropReport { bottom: 46px; max-width: 60%; text-align: center; }
+#dropReport:empty { display: none; }
+/* ⚠️ A DROP TARGET THAT GIVES NO SIGN IT IS ONE is a drop target people do not
+   try twice. The whole window highlights, because the whole window accepts. */
+body.dropping #viewport::after {
+  content: ""; position: absolute; inset: 6px; pointer-events: none; z-index: 8;
+  border: 2px dashed var(--ink-soft); border-radius: 6px;
+  background: rgba(255,255,255,.35);
+}
 #status b { font-variant-numeric: tabular-nums; }
 #status .sep { opacity: .45; }
 #empty {
@@ -305,7 +352,15 @@ details.panel[open] > summary .sec-badge { display: none; }
   </header>
 
   <!-- IMPORT -->
-  <details class="panel" open>
+  <!-- ⚠️ EVERY PANEL STARTS SHUT (Marc, asked twice). The rule this replaces —
+       "every fold that accepts a file opens by default" — existed because the
+       front door must be findable. That rule is kept by a different means now:
+       a file dropped ANYWHERE on the window is routed to the right place and
+       the panel it landed in opens itself. So the front door is the whole
+       window, and the panels can start quiet. Undoing the global drop without
+       reopening this panel would strand a new user in front of a tool that
+       looks like it does nothing. -->
+  <details class="panel">
     <summary>
       <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       <h2>Import</h2><span class="sec-badge" id="b-import"></span>
@@ -314,216 +369,127 @@ details.panel[open] > summary .sec-badge { display: none; }
       <p class="why">Everything is read in this page and nothing is uploaded — there is no
         server to upload to. That is what lets field photographs be handled here at all.</p>
 
-      <div class="subhead">Terrain</div>
-      <div id="dropzone">
-        <div class="dz" id="dropDEM"><strong>Elevation raster</strong>
-          <span class="act">Choose GeoTIFFs, or drop them here</span>
-          <span class="fine">North-up. Several at once is fine — a DTM under a DSM, the same
-            ground in two years, or a whole plate set. They load in name order; the first
-            becomes the primary.</span></div>
-      </div>
-      <div class="plist" id="layerList"></div>
-      <p class="meta" id="demInfo">No raster loaded.</p>
-      <button class="link" id="demoBtn">or build a demonstration site from nothing</button>
+      <details class="sub">
+        <summary class="subhead">Terrain</summary>
+        <div class="sub-body">
+        <div id="dropzone">
+          <div class="dz" id="dropDEM"><strong>Elevation raster</strong>
+            <span class="act">Choose GeoTIFFs, or drop them here</span>
+            <span class="fine">North-up. Several at once is fine — a DTM under a DSM, the same
+              ground in two years, or a whole plate set. They load in name order; the first
+              becomes the primary.</span></div>
+        </div>
+        <p class="meta" id="demInfo">No raster loaded.</p>
+        <button class="link" id="demoBtn">or build a demonstration site from nothing</button>
 
-      <div class="subhead">Site photographs</div>
-      <div id="dropzone2">
-        <div class="dz" id="dropPhotos"><strong>Photographs</strong>
-          <span class="act">Choose JPEGs, or drop them here</span>
-          <span class="fine">A folder's worth at a time. They are read in this page and
-            never uploaded; ones without GPS are kept and listed separately.</span></div>
-      </div>
-      <p class="meta" id="photoInfo">None loaded.</p>
+        <!-- ⚠️ THE SHAPEFILE FRONT DOOR BELONGS UNDER THE VERB "IMPORT". These
+             three strips are the same targets as the ones beside each list in
+             Symbology / Styling, wired to the same loader; a shapefile is a file you
+             IMPORT, and this is the first place anyone looks for one. That pair stays,
+             because beside a list it reads as "add another one of these" — but a
+             front door that only exists two screens down a closed panel is a front
+             door nobody finds. -->
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Vector features</summary>
+        <div class="sub-body">
+        <p class="why">A planting bed, a path, a tree survey. <b>Shapefile:</b> drop the
+          <b>.shp</b> and its <b>.dbf</b> together — the .shp holds the geometry, the .dbf the
+          values you style by; add the <b>.prj</b> and the tool can check its coordinate system
+          against the raster. The .shx is not needed. <b>GML:</b> one file is enough — it
+          carries its geometry, its attributes and its CRS together, and a GML holding points,
+          lines and areas at once becomes one layer of each. A file dropped on the wrong strip
+          is still filed correctly, under the geometry it actually holds.</p>
+        <div class="shpdrop" id="dropImpFeatPolygon" data-kind="polygon">
+          + Add or drop a <b>polygon</b> layer — .shp or .gml…</div>
+        <p class="why">A planting bed, a water body, a paved surface. An area has an inside, so
+          it takes a <b>fill pattern</b> and an optional outline.</p>
+        <div class="shpdrop" id="dropImpFeatLine" data-kind="line">
+          + Add or drop a <b>line</b> layer — .shp or .gml…</div>
+        <p class="why">A path, a wall, a stream. A line has no inside, so it takes a
+          <b>linetype</b> and a scale.</p>
+        <div class="shpdrop" id="dropImpFeatPoint" data-kind="point">
+          + Add or drop a <b>point</b> layer — .shp or .gml…</div>
+        <p class="why">A tree survey, a sample location, a lamp post. A point has no extent at
+          all, so it takes a <b>radius</b> first — the symbol is invented, and how big it is, is
+          the decision.</p>
+        <p class="meta" id="impFeatInfo">None loaded.</p>
+        <button class="link" id="gotoFeatures">See the feature layers you have loaded</button>
 
-      <div class="subhead">Orthophoto</div>
-      <div id="dropzone3">
-        <div class="dz" id="dropImage"><strong>Image</strong>
-          <span class="act">Choose an image, or drop it here</span>
-          <span class="fine">GeoTIFF, PNG or JPEG. Say where it came from below — a
-            restricted image can be previewed and will not export.</span></div>
-      </div>
-      <label class="field"><span>Licence</span>
-        <select id="licence">
-          <option value="unknown">— say where it came from —</option>
-          <option value="own">Mine (my own survey or drone)</option>
-          <option value="open">Openly licensed</option>
-          <option value="restricted">Restricted (education/research only)</option>
-        </select></label>
-      <p class="meta" id="imageInfo">None loaded.</p>
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Site photographs</summary>
+        <div class="sub-body">
+        <div id="dropzone2">
+          <div class="dz" id="dropPhotos"><strong>Photographs</strong>
+            <span class="act">Choose JPEGs, or drop them here</span>
+            <span class="fine">A folder's worth at a time. They are read in this page and
+              never uploaded; ones without GPS are kept and listed separately.</span></div>
+        </div>
+        <p class="meta" id="photoInfo">None loaded.</p>
 
-      <div class="subhead">Tile boundary</div>
-      <p class="why">Working on one tile of a bigger model? Load the <b>whole</b> model here,
-        set every layer up over all of it, and cut your tile out at the end — the boundary
-        goes in <b>Export → Clip to a tile</b>. That order is what makes neighbouring tiles
-        match: the patterns are anchored to the ground, so a boundary is a line drawn through
-        one continuous field rather than two fields that have to be persuaded to agree.</p>
-      <button class="link" id="gotoClip">Go to the tile boundary in Export</button>
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Orthophoto</summary>
+        <div class="sub-body">
+        <div id="dropzone3">
+          <div class="dz" id="dropImage"><strong>Image</strong>
+            <span class="act">Choose an image, or drop it here</span>
+            <span class="fine">GeoTIFF, PNG or JPEG. Say where it came from below — a
+              restricted image can be previewed and will not export.</span></div>
+        </div>
+        <label class="field"><span>Licence</span>
+          <select id="licence">
+            <option value="unknown">— say where it came from —</option>
+            <option value="own">Mine (my own survey or drone)</option>
+            <option value="open">Openly licensed</option>
+            <option value="restricted">Restricted (education/research only)</option>
+          </select></label>
+        <p class="meta" id="imageInfo">None loaded.</p>
+
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Tile boundary</summary>
+        <div class="sub-body">
+        <p class="why">Working on one tile of a bigger model? Load the <b>whole</b> model here,
+          set every layer up over all of it, and cut your tile out at the end — the boundary
+          goes in <b>Export → Clip to a tile</b>. That order is what makes neighbouring tiles
+          match: the patterns are anchored to the ground, so a boundary is a line drawn through
+          one continuous field rather than two fields that have to be persuaded to agree.</p>
+        <button class="link" id="gotoClip">Go to the tile boundary in Export</button>
+        </div>
+      </details>
     </div>
   </details>
 
-  <!-- MARK -->
+
+  <!-- LAYERS -->
   <details class="panel">
     <summary>
       <svg viewBox="0 0 24 24"><path d="M3 7h3l1.5-2h5L14 7h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/><circle cx="10" cy="13" r="3"/></svg>
-      <h2>Mark</h2><span class="sec-badge" id="b-mark"></span>
+      <h2>Layers</h2><span class="sec-badge" id="b-mark"></span>
     </summary>
     <div class="sec-body">
-      <p class="why">A photograph knows where it was taken and which way the camera looked.
-        Both become part of the mark.</p>
-      <p class="note warn" id="gpsNote">A phone fixes its position to about 5–10 m. At this
-        scale that is <b id="gpsMM">—</b> on the sheet, often larger than the symbol it places.
-        <b>Drag a point on the drawing</b> to correct it against the terrain.</p>
-      <label class="check"><input type="checkbox" id="pOn" checked> Draw photographs</label>
-      <label class="field"><span>Mark</span>
-        <select id="pMark">
-          <option>circle</option><option>square</option><option>triangle</option>
-          <option>cross</option><option>diamond</option></select></label>
-      <label class="field"><span>Size <em id="pSizeV">3 mm</em></span>
-        <input type="range" id="pSize" min="1" max="10" step="0.25" value="3"></label>
-      <label class="check"><input type="checkbox" id="pNum" checked> Engrave numbers</label>
-      <label class="check"><input type="checkbox" id="pBear" checked> Draw the bearing</label>
-      <label class="check"><input type="checkbox" id="pHalo"> Draw the GPS uncertainty</label>
-      <div class="plist" id="plist"></div>
+      <!-- ⚠️ ONE FLAT LIST, NOT SIX GROUPED ONES. Grouping by kind put six
+           headings over what is usually one or two layers each, so the panel was
+           mostly labels for empty groups. A layer knows what it is and says so
+           on its own row; the reader does not need the tool to sort them into
+           bins first. This is QGIS's own layer panel, and the reason it works is
+           that the list IS the set of things you can select. -->
+      <p class="why">Everything loaded, in one list. <b>Select a layer</b> and the window on the
+        right becomes its property sheet — contours and sections for an elevation raster, fill
+        and linetype for an area, a radius for a point, halftone for the orthophoto. Only ever
+        the controls that layer can use.</p>
+      <div class="plist" id="layers"></div>
+      <p class="meta" id="featInfo">Nothing loaded — drop a file anywhere.</p>
 
-      <div class="subhead">Area features · polygons</div>
-      <p class="why">A planting bed, a water body, a paved surface. An area has an inside, so
-        it takes a <b>fill pattern</b> and an optional outline.</p>
-      <div class="plist" id="featListPolygon"></div>
-      <div class="shpdrop" id="dropFeatPolygon" data-kind="polygon">
-        + Add or drop a <b>polygon</b> shapefile (.shp)…</div>
-
-      <div class="subhead">Line features</div>
-      <p class="why">A path, a wall, a stream. A line has no inside, so it takes a
-        <b>linetype</b> and a scale.</p>
-      <div class="plist" id="featListLine"></div>
-      <div class="shpdrop" id="dropFeatLine" data-kind="line">
-        + Add or drop a <b>line</b> shapefile (.shp)…</div>
-
-      <div class="subhead">Point features</div>
-      <p class="why">A tree survey, a sample location, a lamp post. A point has no extent at
-        all, so it takes a <b>radius</b> first — the symbol is invented, and how big it is, is
-        the decision.</p>
-      <div class="plist" id="featListPoint"></div>
-      <div class="shpdrop" id="dropFeatPoint" data-kind="point">
-        + Add or drop a <b>point</b> shapefile (.shp)…</div>
-      <p class="meta" id="featInfo">None loaded.</p>
-
-      <div id="featStyle" hidden>
-        <label class="field"><span>Draw on pass</span><select id="ftPass"></select></label>
-
-        <div id="ftAreaOnly">
-          <label class="field"><span>Fill pattern</span><select id="ftPattern"></select></label>
-          <label class="field"><span>Fill spacing (mm)</span>
-            <input type="number" id="ftSpacing" min="0.3" max="20" step="0.1" value="2"></label>
-          <label class="field"><span>Fill angle (°)</span>
-            <input type="number" id="ftRotation" min="0" max="180" step="5" value="45"></label>
-          <label class="check"><input type="checkbox" id="ftOutline" checked>
-            Draw the outline too</label>
-
-          <div class="subhead">Density by an attribute</div>
-          <p class="why">⚠️ Inverted on purpose: a <b>high</b> value gives a <b>tighter</b>
-            fill, because density is what a reader sees. Mapped the obvious way round, the
-            densest planting would come out as the emptiest hatch.</p>
-          <label class="field"><span>Field</span><select id="ftDensField"></select></label>
-          <label class="field"><span>From</span>
-            <input type="number" id="ftDensLo" step="any" value="0"></label>
-          <label class="field"><span>To</span>
-            <input type="number" id="ftDensHi" step="any" value="0"></label>
-          <label class="field"><span>Tightest (mm)</span>
-            <input type="number" id="ftDensMin" min="0.3" step="0.1" value="0.8"></label>
-          <label class="field"><span>Loosest (mm)</span>
-            <input type="number" id="ftDensMax" min="0.4" step="0.1" value="5"></label>
-        </div>
-
-        <div id="ftPointOnly">
-          <label class="field"><span>Symbol</span><select id="ftSymbol"></select></label>
-          <label class="field"><span>Symbol radius (mm)</span>
-            <input type="number" id="ftRadius" min="0.3" max="30" step="0.1" value="2"></label>
-
-          <div class="subhead">Size by an attribute</div>
-          <p class="why">Pick a numeric column from the .dbf and the symbol grows with it.
-            ⚠️ Scaled by <b>area</b>, not radius: a circle of twice the radius covers four
-            times the paper, so scaling the radius directly makes every large value look
-            several times bigger than it is.</p>
-          <label class="field"><span>Field</span><select id="ftSizeField"></select></label>
-          <label class="field"><span>From</span>
-            <input type="number" id="ftSizeLo" step="any" value="0"></label>
-          <label class="field"><span>To</span>
-            <input type="number" id="ftSizeHi" step="any" value="0"></label>
-          <label class="field"><span>Smallest (mm)</span>
-            <input type="number" id="ftSizeMin" min="0.2" step="0.1" value="1.2"></label>
-          <label class="field"><span>Largest (mm)</span>
-            <input type="number" id="ftSizeMax" min="0.3" step="0.1" value="5"></label>
-          <label class="field"><span>Scaling</span>
-            <select id="ftSizeMode">
-              <option value="area">Area — honest for quantities</option>
-              <option value="linear">Radius — the Hadseløya convention</option>
-            </select></label>
-          <p class="why">Set <b>From</b> to 0 for true proportionality, where a value of
-            nothing is a symbol of nothing. Otherwise the range is graded between the two
-            sizes.</p>
-
-          <div class="subhead">Turn by an attribute</div>
-          <p class="why">⚠️ Only the directional symbols show it — turning a circle is a null
-            operation. A field already in <b>degrees</b> (an aspect, a bearing) is used as is,
-            clockwise from north; any other field has no angular meaning, so its range is
-            spread over a full turn and the result is a pattern rather than a direction.</p>
-          <label class="field"><span>Field</span><select id="ftRotField"></select></label>
-          <label class="field"><span>Read as</span>
-            <select id="ftRotMode">
-              <option value="degrees">Degrees, clockwise from north</option>
-              <option value="range">Its range, spread over a full turn</option>
-            </select></label>
-          <label class="field"><span>Offset (°)</span>
-            <input type="number" id="ftRotOffset" step="5" value="0"></label>
-          <label class="field"><span>Inside the symbol</span>
-            <select id="ftPointFill"></select></label>
-          <label class="field"><span>Inside spacing (mm)</span>
-            <input type="number" id="ftPointSpacing" min="0.2" max="10" step="0.1" value="1"></label>
-        </div>
-
-        <label class="field"><span>Line style</span><select id="ftLinetype"></select></label>
-        <label class="field"><span>Line style scale</span>
-          <input type="number" id="ftScale" min="0.2" max="10" step="0.1" value="1"></label>
-        <button class="link" id="ftRemove" style="font-size:.66rem">Remove this layer</button>
-        <p class="why">⚠️ A fill is many separate strokes, and every one is a head move. The
-          count is reported before you export. ⚠️ These line styles are the Slicer's own
-          measured run lengths — a dot is 0.4 mm because 0.1 mm burns were invisible on
-          cardboard.</p>
-      </div>
     </div>
   </details>
 
-  <!-- ENGRAVE -->
-  <details class="panel">
-    <summary>
-      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1"/><circle cx="8" cy="10" r="1.4"/><circle cx="14.5" cy="10" r="2.6"/><circle cx="10.5" cy="15.5" r="2"/></svg>
-      <h2>Engrave</h2><span class="sec-badge" id="b-engrave"></span>
-    </summary>
-    <div class="sec-body">
-      <p class="why">A laser draws marks, not pixels. There are two honest ways to put a
-        photograph on material, and they are different tools.</p>
-      <label class="check"><input type="checkbox" id="hOn"> Engrave the image</label>
-      <label class="field"><span>As</span>
-        <select id="hMode">
-          <option value="vector">Halftone circles — one value</option>
-          <option value="triple">Halftone circles — three values at once</option>
-        </select></label>
-      <label class="field"><span>Samples across <em id="hAcrossV">70</em></span>
-        <input type="range" id="hAcross" min="10" max="200" step="2" value="70"></label>
-      <p class="note" id="hBudget">No image loaded.</p>
-      <label class="field" id="rowChan"><span>Value</span><select id="hChan"></select></label>
-      <p class="why" id="hChanHint"></p>
-      <div id="rowTriple" hidden>
-        <label class="field"><span>Outer circle</span><select id="hC1"></select></label>
-        <label class="field"><span>Middle circle</span><select id="hC2"></select></label>
-        <label class="field"><span>Inner circle</span><select id="hC3"></select></label>
-        <p class="why">Three circles about one centre, each on its own laser pass. Raw red,
-          green and blue engrave correctly but a reader cannot recover a landscape quantity
-          from their radii — the derived values can be named out loud.</p>
-      </div>
-    </div>
-  </details>
 
   <!-- COMPOSE -->
   <details class="panel">
@@ -554,10 +520,14 @@ details.panel[open] > summary .sec-badge { display: none; }
         same voice. Every style is the same single-stroke skeleton, reshaped: an outline font
         from the system would make the laser cut round the ink and drop the counters of an
         8 out as dust, so there is deliberately no such option.</p>
-      <div class="subhead">Furniture</div>
-      <label class="check"><input type="checkbox" id="sFrame" checked> Cut the sheet outline</label>
-      <label class="check"><input type="checkbox" id="sBar" checked> Scale bar</label>
-      <label class="check"><input type="checkbox" id="sNorth" checked> North point</label>
+      <details class="sub">
+        <summary class="subhead">Furniture</summary>
+        <div class="sub-body">
+        <label class="check"><input type="checkbox" id="sFrame" checked> Cut the sheet outline</label>
+        <label class="check"><input type="checkbox" id="sBar" checked> Scale bar</label>
+        <label class="check"><input type="checkbox" id="sNorth" checked> North point</label>
+        </div>
+      </details>
     </div>
   </details>
 
@@ -568,54 +538,146 @@ details.panel[open] > summary .sec-badge { display: none; }
       <h2>Export</h2><span class="sec-badge" id="b-export"></span>
     </summary>
     <div class="sec-body">
-      <div class="subhead">Clip to a tile</div>
-      <p class="why">Load the <b>whole</b> model, set up every layer over all of it, then cut
-        out the piece you are responsible for. Doing it in that order is what makes tiles
-        match: hatches, dashes and symbol grids are anchored to the <b>ground</b>, so a
-        boundary is a line drawn through one continuous field — neighbouring tiles cannot
-        disagree, because there was only ever one field.</p>
-      <div id="dropzone5">
-        <div class="dz" id="dropClip"><strong>Tile boundary</strong>
-          <span class="act">Choose a <b>.shp</b> file, or drop it here</span>
-          <span class="fine">A polygon shapefile. Pick the <b>.shp</b> — not the .dbf or
-            .shx, which hold no geometry. Draw it in QGIS and save it in the same CRS as
-            your raster.</span></div>
-      </div>
-      <label class="check"><input type="checkbox" id="clipOn"> Clip the drawing to it</label>
-      <button class="link" id="clipClear" style="font-size:.66rem">Remove the boundary</button>
-      <p class="why" id="clipInfo">No boundary loaded — the whole model is drawn.</p>
-      <p class="why">⚠️ The boundary becomes the <b>outer cut</b>, and the rectangular sheet
-        outline is not drawn — a plate cannot have two outer cuts. Circles that straddle the
-        edge are dropped <b>whole</b>: a clipped circle is an arc, and an arc reads as a
-        smaller value than it stands for.</p>
+      <details class="sub">
+        <summary class="subhead">Clip to a tile</summary>
+        <div class="sub-body">
+        <p class="why">Load the <b>whole</b> model, set up every layer over all of it, then cut
+          out the piece you are responsible for. Doing it in that order is what makes tiles
+          match: hatches, dashes and symbol grids are anchored to the <b>ground</b>, so a
+          boundary is a line drawn through one continuous field — neighbouring tiles cannot
+          disagree, because there was only ever one field.</p>
+        <!-- ⚠️ THE BOUNDARY COMES FROM A LAYER ALREADY IMPORTED. Shapefiles enter
+             this tool in one place, under Import; asking for the same file a
+             second time here made the tile boundary look like a different kind of
+             thing from every other polygon, and meant loading it twice to both
+             see it and cut to it. -->
+        <label class="field"><span>Boundary</span>
+          <select id="clipFrom">
+            <option value="">— none, the whole model is drawn —</option>
+          </select></label>
+        <p class="why">Any <b>polygon layer</b> loaded under Import can be the tile. A layer
+          used as the boundary is not drawn as a feature as well — its outline is already
+          the outer cut, and drawing it twice would send the head round the same line twice.</p>
+        <div class="shpdrop" id="dropClip" data-kind="polygon">
+          + or drop a <b>polygon</b> shapefile (.shp) straight in…</div>
+        <label class="check"><input type="checkbox" id="clipOn"> Clip the drawing to it</label>
+        <button class="link" id="clipClear" style="font-size:.66rem">Remove the boundary</button>
+        <p class="why" id="clipInfo">No boundary loaded — the whole model is drawn.</p>
+        <p class="why">⚠️ The boundary becomes the <b>outer cut</b>, and the rectangular sheet
+          outline is not drawn — a plate cannot have two outer cuts. Circles that straddle the
+          edge are dropped <b>whole</b>: a clipped circle is an arc, and an arc reads as a
+          smaller value than it stands for.</p>
 
-      <div class="subhead">Files</div>
-      <p class="why">The file carries DL-TerrainSlicer's six pass layers unchanged, so a laser
-        configuration already set up for that tool can be reused as it stands.</p>
-      <button id="expDXF">Save the DXF</button>
-      <button id="expSVG">Save the SVG</button>
-      <p class="why">The DXF is for the machine; the SVG is for everything else — a print
-        layout, a report figure, Illustrator. Both carry the same geometry in the passes' own
-        RGB colours. ⚠️ The SVG's stroke width is a hairline for visibility only: on the machine
-        a line's weight is its pass's power and speed.</p>
-      <button class="link" id="expReport">Save the cutting report</button>
-      <div class="subhead">Material test</div>
-      <p class="why">⚠️ Cut this first on any material the tool has not been used on. Every label
-        size in here is a justified guess until it is read off a real coupon.</p>
-      <label class="field"><span>Material</span>
-        <input type="text" id="tsMaterial" placeholder="e.g. 2 mm MDF"></label>
-      <label class="check"><input type="checkbox" id="tsCut" checked>
-        Include the cut coupon (passes 4 and 5 cut through)</label>
-      <button id="expTest">Save the material test sheet</button>
-      <p class="why">Saves three files: the DXF, an SVG of the same sheet, and the procedure to keep with the coupon.</p>
-      <p class="meta" id="expInfo"></p>
-      <div class="subhead">Laser passes</div>
-      <div class="pass"><i style="background:#000"></i><b>0</b> engrave — halftone</div>
-      <div class="pass"><i style="background:#00f"></i><b>1</b> score light — labels, numbers</div>
-      <div class="pass"><i style="background:#00a000"></i><b>2</b> score medium — contours, bearings</div>
-      <div class="pass"><i style="background:#00a0a0"></i><b>3</b> score strong — index contours</div>
-      <div class="pass"><i style="background:#c000c0"></i><b>4</b> cut inner — photograph marks</div>
-      <div class="pass"><i style="background:#e00000"></i><b>5</b> cut outer — sheet outline, last</div>
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Files</summary>
+        <div class="sub-body">
+        <p class="why">The file carries DL-TerrainSlicer's six pass layers unchanged, so a laser
+          configuration already set up for that tool can be reused as it stands.</p>
+        <button id="expDXF">Save the DXF</button>
+        <button id="expSVG">Save the SVG</button>
+        <p class="why">The DXF is for the machine; the SVG is for everything else — a print
+          layout, a report figure, Illustrator. Both carry the same geometry in the passes' own
+          RGB colours. ⚠️ The SVG's stroke width is a hairline for visibility only: on the machine
+          a line's weight is its pass's power and speed.</p>
+        <button class="link" id="expReport">Save the cutting report</button>
+
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Engrave the whole drawing as an image</summary>
+        <div class="sub-body">
+        <p class="why">A PNG the machine sweeps like a printer instead of tracing with the head.
+          The passes become <b>grey values</b>, because in a raster engrave the pixel is the
+          <b>power</b> — the screen palette would put green and cyan at almost the same
+          brightness and two different operations would arrive at the same depth.</p>
+        <label class="field"><span>Resolution</span>
+          <select id="rasDPI">
+            <option value="72">72 dpi — a proof</option>
+            <option value="150">150 dpi</option>
+            <option value="300" selected>300 dpi — engraving</option>
+          </select></label>
+        <label class="field"><span>Line width (mm)</span>
+          <input type="number" id="rasStroke" min="0.05" max="3" step="0.05" value="0.25"></label>
+        <label class="check"><input type="checkbox" id="rasAlpha">
+          Transparent background <em>(PNG only)</em></label>
+        <label class="check"><input type="checkbox" id="rasCut" checked>
+          Also save the cut lines as SVG</label>
+        <p class="meta" id="rasSize">—</p>
+        <!-- ⚠️ TWO BUTTONS, NOT A FORMAT PICKER (Marc). A picker makes the format a
+             setting you have to notice before pressing Save; two buttons make it
+             the press itself. They are also not equal choices — one is what you
+             engrave from and the other is for documents — and a dropdown says
+             they are interchangeable. -->
+        <button id="expPNG">Save PNG</button>
+        <button id="expJPG">Save JPEG</button>
+        <p class="why">The image and the SVG are written on the <b>same sheet, same origin, same
+          size</b>, so they line up on the bed: raster the field, then cut the outline without
+          moving the material. The SVG carries <b>only the cut passes</b> — 4 inner and 5 outer.</p>
+        <p class="why">⚠️ <b>The image cuts nothing, not even the outer cut.</b> Rastered, the
+          line that releases the plate is just a dark line drawn on it — which is why the cut
+          lines go out as vectors beside it. ⚠️ A stroke thinner than about <b>1.5 pixels</b>
+          does not survive rasterising: it lands as pale grey, and grey here is power, so it is
+          a line the machine barely burns. Thin lines are widened to that floor and the tool
+          says when it happened. ⚠️ <b>A transparent PNG is a real risk at the machine</b> —
+          some laser software composites transparency onto BLACK, which engraves the entire
+          background at full power. Use it for placing the drawing in a document, not for
+          sending to the bed. ⚠️ JPEG is lossy, and its ringing around a line becomes wobble in
+          the burn; PNG is the one to engrave from. ⚠️ The grey ladder is a <b>justified
+          guess</b> until the coupon gives a power and speed for each pass.</p>
+
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Back to QGIS</summary>
+        <div class="sub-body">
+        <p class="why">The drawing as <b>shapefiles in the raster's own coordinates</b>, so the
+          line work can be opened beside the data it came from. One zip: a <b>line</b> layer and,
+          if the drawing has any, a <b>point</b> layer for the circle grid and photo marks. Every
+          record carries the pass it is cut on and the <b>translation that made it</b>, so
+          contours, hachures, sections and the rest can be pulled apart again in QGIS.</p>
+        <button id="expSHP">Save shapefiles for QGIS</button>
+        <p class="why">⚠️ Closed rings stay <b>polylines</b>. A contour that closes is still a
+          contour; promoting it to a polygon would fill it and imply an area the survey never
+          claimed. ⚠️ Circles leave as <b>points carrying their radius</b>, not as polygons — the
+          circle grid encodes a value as a size, and a frozen polygon throws that value away.
+          ⚠️ A <b>.prj</b> is written only when the raster's CRS can be stated exactly; otherwise
+          QGIS asks once, which is better than this tool guessing a datum.</p>
+
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Material test</summary>
+        <div class="sub-body">
+        <p class="why">⚠️ Cut this first on any material the tool has not been used on. Every label
+          size in here is a justified guess until it is read off a real coupon.</p>
+        <label class="field"><span>Material</span>
+          <input type="text" id="tsMaterial" placeholder="e.g. 2 mm MDF"></label>
+        <label class="check"><input type="checkbox" id="tsCut" checked>
+          Include the cut coupon (passes 4 and 5 cut through)</label>
+        <button id="expTest">Save the material test sheet</button>
+        <p class="why">Saves three files: the DXF, an SVG of the same sheet, and the procedure to keep with the coupon.</p>
+        <p class="meta" id="expInfo"></p>
+        <!-- ⚠️ THE RESULT OF AN EXPORT GETS ITS OWN LINE. #expInfo is a LIVE summary
+             of the drawing and is rewritten on every recompile — so an export message
+             written there survived only until the next keystroke, and the messages
+             that matter most are warnings: that a transparent PNG can engrave a whole
+             plate black, that the image cuts nothing, that a line was widened. -->
+        <p class="meta" id="expResult"></p>
+        </div>
+      </details>
+      <details class="sub">
+        <summary class="subhead">Laser passes</summary>
+        <div class="sub-body">
+        <div class="pass"><i style="background:#000"></i><b>0</b> engrave — halftone</div>
+        <div class="pass"><i style="background:#00f"></i><b>1</b> score light — labels, numbers</div>
+        <div class="pass"><i style="background:#00a000"></i><b>2</b> score medium — contours, bearings</div>
+        <div class="pass"><i style="background:#00a0a0"></i><b>3</b> score strong — index contours</div>
+        <div class="pass"><i style="background:#c000c0"></i><b>4</b> cut inner — photograph marks</div>
+        <div class="pass"><i style="background:#e00000"></i><b>5</b> cut outer — sheet outline, last</div>
+        </div>
+      </details>
     </div>
   </details>
 
@@ -626,24 +688,53 @@ details.panel[open] > summary .sec-badge { display: none; }
 <main id="viewport">
   <canvas id="canvas"></canvas>
 
-  <!-- ⚠️ THE FOLD CONTROL LIVES ON THE VIEWPORT, NOT IN THE MENU HEADER, so it
-       does not travel when the window is dragged. A control that hides the menu
-       must not be somewhere the menu has moved to. -->
-  <button id="menu-min" title="Fold the menu away">−</button>
-  <button id="menu-chip" title="Bring the menu back" hidden>☰</button>
+  <!-- ⚠️ ONE STRIP FOR EVERYTHING THAT BELONGS TO THE VIEWPORT RATHER THAN TO A
+       WINDOW. Zoom, fit, and the menu fold all act on what is being looked at,
+       not on the panel they happen to sit near, so they read as one group and
+       are laid out as one.
 
-  <div id="zoomer">
-    <button id="zIn" title="Closer">+</button>
-    <button id="zOut" title="Further">−</button>
-    <button id="zFit" title="Fit the sheet">⤢</button>
+       ⚠️ THE FOLD CONTROL LIVES ON THE VIEWPORT, NOT IN THE MENU HEADER, so it
+       does not travel when the window is dragged. A control that hides the menu
+       must not be somewhere the menu has moved to.
+
+       ⚠️ THE CHIP AND THE FOLD BUTTON ARE THE SAME SLOT IN THE SAME ROW, which
+       is what finally makes "fold and unfold happen under the same pixel" TRUE.
+       It was asserted in a comment for a long time while one was `left: 12px`
+       and the other `right: 11px` — 1,227 px apart, so the control jumped the
+       full width of the screen and had to be hunted for. Being adjacent
+       children of one flex row, exactly one of them visible and both the same
+       26x30, the pixel cannot drift again without someone changing both. -->
+  <div id="viewtools">
+    <!-- ⚠️ A DENSITY SWITCH, NOT A HELP BUTTON. It hides the explanatory prose
+         once it has been read — 48 paragraphs across the two windows, which is
+         most of their height. It lives out here rather than in either window's
+         header because it governs BOTH of them, and because a header that is
+         also a drag handle is a poor place for a control. -->
+    <button id="explainToggle" title="Hide the explanations">?</button>
+    <div id="zoomer">
+      <button id="zIn" title="Closer">+</button>
+      <button id="zOut" title="Further">−</button>
+      <button id="zFit" title="Fit the sheet">⤢</button>
+    </div>
+    <button id="menu-min" title="Fold the menu away">−</button>
+    <button id="menu-chip" title="Bring the menu back" hidden>☰</button>
   </div>
 
+  <!-- ⚠️ SAYS "ANYWHERE", AND MEANS IT. With every panel starting shut this
+       overlay is the only instruction on screen, so it must describe something
+       that actually works — a message telling someone to drop a file onto a
+       canvas that ignores drops is worse than no message. -->
   <div id="empty"><div>
-    <h2>Drop an elevation raster to begin</h2>
-    A north-up GeoTIFF — compressed or not. Photographs and an orthophoto can follow.<br>
+    <h2>Drop an elevation raster anywhere to begin</h2>
+    A north-up GeoTIFF — compressed or not. Shapefiles, GML, photographs and an
+    orthophoto can follow, dropped anywhere on this window; each one is routed to
+    where it belongs and the tool says where it put it.<br>
     Nothing leaves this page: there is no server behind it.<br><br>
-    <code>build a demonstration site</code> in Import makes one from nothing.
+    <code>build a demonstration site</code> in <b>Import</b> makes one from nothing.
   </div></div>
+
+  <!-- Where a window-wide drop reports what it did with each file. -->
+  <div class="hud" id="dropReport"></div>
 
   <div class="hud" id="status">
     <span>every line is what the machine will cut</span>
@@ -656,7 +747,6 @@ details.panel[open] > summary .sec-badge { display: none; }
   <section id="readout">
     <div id="readout-head">
       <h2 id="propTitle">Properties</h2>
-      <button id="readoutMin" title="Fold">–</button>
     </div>
 
     <!-- ⚠️ THE INSPECTOR. This inverts DL-TerrainDiversity's rule that the left
@@ -668,237 +758,396 @@ details.panel[open] > summary .sec-badge { display: none; }
          arrangement made you click a raster in Import and then scroll past it
          into a separate section to adjust the thing you had just selected. -->
     <div id="propBody">
+    <!-- ⚠️ ONE INSPECTOR, TWO KINDS OF OBJECT. The right-hand window is the
+         property sheet for WHATEVER IS SELECTED — a raster layer or a feature
+         layer — and exactly one of these two blocks is visible at a time. It
+         used to hold only rasters while feature styling sat in the left menu,
+         so "styling" appeared on both sides of the screen split by which KIND
+         of object it belonged to, which is not a distinction anyone can see
+         from the outside. Left is now what you load and compose; right is what
+         the selected thing IS. -->
+    <div id="propRaster">
 
     <p class="why">Engraved, not cut. Each raster carries its own interval, line style and
       laser pass, so two surfaces on one sheet can be told apart.</p>
     <label class="field"><span>These settings apply to</span>
       <select id="cLayer"></select></label>
     <label class="check"><input type="checkbox" id="cOn" checked> Draw contours</label>
-    <label class="check"><input type="checkbox" id="cAuto" checked> Interval from the relief</label>
     <label class="field"><span>Interval <em id="cIntV">—</em></span>
-      <input type="number" id="cInt" step="0.05" min="0.01" value="1" disabled></label>
+      <input type="number" id="cInt" step="0.05" min="0.01" value="1"></label>
     <label class="field"><span>Index line every <em id="cIdxV">5th</em></span>
       <input type="range" id="cIdx" min="0" max="10" step="1" value="5"></label>
 
-    <div class="subhead">Labels</div>
-    <label class="check"><input type="checkbox" id="lOn" checked> Engrave labels</label>
-    <label class="field"><span>Label every <em id="lEveryV">5th</em></span>
-      <input type="range" id="lEvery" min="1" max="10" step="1" value="5"></label>
-    <label class="field"><span>Size <em id="lSizeV">2.2 mm</em></span>
-      <input type="range" id="lSize" min="1.2" max="5" step="0.1" value="2.2"></label>
-    <label class="field"><span>Spacing along the line <em id="lSpaceV">55 mm</em></span>
-      <input type="range" id="lSpace" min="20" max="160" step="5" value="55"></label>
-    <label class="field"><span>Set</span>
-      <select id="lOrient">
-        <option value="horizontal">Upright, in a gap</option>
-        <option value="tangent">Along the line, in a gap</option>
-      </select></label>
-    <p class="why">Each label cuts its own gap first. Upright engraves faster and reads
-      better on material; along-the-line is for drawings meant for paper.</p>
+    <details class="sub">
+      <summary class="subhead">Labels</summary>
+      <div class="sub-body">
+      <label class="check"><input type="checkbox" id="lOn" checked> Engrave labels</label>
+      <label class="field"><span>Label every <em id="lEveryV">5th</em></span>
+        <input type="range" id="lEvery" min="1" max="10" step="1" value="5"></label>
+      <label class="field"><span>Size <em id="lSizeV">2.2 mm</em></span>
+        <input type="range" id="lSize" min="1.2" max="5" step="0.1" value="2.2"></label>
+      <label class="field"><span>Spacing along the line <em id="lSpaceV">55 mm</em></span>
+        <input type="range" id="lSpace" min="20" max="160" step="5" value="55"></label>
+      <label class="field"><span>Set</span>
+        <select id="lOrient">
+          <option value="horizontal">Upright, in a gap</option>
+          <option value="tangent">Along the line, in a gap</option>
+        </select></label>
+      <p class="why">Each label cuts its own gap first. Upright engraves faster and reads
+        better on material; along-the-line is for drawings meant for paper.</p>
 
-    <div class="subhead">Line style and pass</div>
-    <p class="why">⚠️ A dash is a real break in a real path, not a linetype: laser software
-      ignores linetypes and would cut the line solid. So a dashed contour is many short
-      marks, and the count is reported before you write the file.</p>
-    <label class="field"><span>Intermediate lines</span><select id="cStyle"></select></label>
-    <label class="field"><span>&nbsp;&nbsp;on pass</span><select id="cPass"></select></label>
-    <label class="field"><span>Index lines</span><select id="cIdxStyle"></select></label>
-    <label class="field"><span>&nbsp;&nbsp;on pass</span><select id="cIdxPass"></select></label>
-    <label class="field"><span>Labels on pass</span><select id="cLabelPass"></select></label>
-    <p class="why">A pass is a machine operation with its own power and speed — choosing a
-      colour here chooses which one the line is cut with, not how it looks on screen.</p>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Line style and pass</summary>
+      <div class="sub-body">
+      <p class="why">⚠️ A dash is a real break in a real path, not a linetype: laser software
+        ignores linetypes and would cut the line solid. So a dashed contour is many short
+        marks, and the count is reported before you write the file.</p>
+      <label class="field"><span>Intermediate lines</span><select id="cStyle"></select></label>
+      <label class="field"><span>&nbsp;&nbsp;on pass</span><select id="cPass"></select></label>
+      <label class="field"><span>Index lines</span><select id="cIdxStyle"></select></label>
+      <label class="field"><span>&nbsp;&nbsp;on pass</span><select id="cIdxPass"></select></label>
+      <label class="field"><span>Labels on pass</span><select id="cLabelPass"></select></label>
+      <p class="why">A pass is a machine operation with its own power and speed — choosing a
+        colour here chooses which one the line is cut with, not how it looks on screen.</p>
 
-    <div class="subhead">Hachures</div>
-    <p class="why">Short strokes down the fall line, hung off this layer's contours and drawn
-      longer where the ground is steeper. The oldest way of showing terrain without tone — and
-      still the grading plan's notation for a cut face or an embankment.</p>
-    <label class="check"><input type="checkbox" id="kOn"> Hang hachures off the contours</label>
-    <label class="field"><span>Every (mm along the contour)</span>
-      <input type="number" id="kSpacing" min="0.5" max="40" step="0.5" value="3"></label>
-    <label class="field"><span>Shortest tick (mm)</span>
-      <input type="number" id="kMin" min="0.2" step="0.1" value="0.9"></label>
-    <label class="field"><span>Longest tick (mm)</span>
-      <input type="number" id="kMax" min="0.3" step="0.1" value="2.5"></label>
-    <label class="check"><input type="checkbox" id="kFixed">
-      All one length — the grading-plan tick, not the terrain hachure</label>
-    <label class="check"><input type="checkbox" id="kIndexOnly">
-      Index contours only — far fewer marks</label>
-    <label class="field"><span>Leave ground flatter than (°) bare</span>
-      <input type="number" id="kMinSlope" min="0" max="80" step="1" value="0"></label>
-    <label class="field"><span>On pass</span><select id="kPass"></select></label>
-    <p class="why">⚠️ Downhill is read from the ground itself, not from which way the contour
-      was traced — a hachure pointing the wrong way turns a hill into a hollow with no other
-      symptom. Every tick is a separate head move, so the count is reported before you export.</p>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Hachures</summary>
+      <div class="sub-body">
+      <p class="why">Short strokes down the fall line, hung off this layer's contours and drawn
+        longer where the ground is steeper. The oldest way of showing terrain without tone — and
+        still the grading plan's notation for a cut face or an embankment.</p>
+      <label class="check"><input type="checkbox" id="kOn"> Hang hachures off the contours</label>
+      <label class="field"><span>Every (mm along the contour)</span>
+        <input type="number" id="kSpacing" min="0.5" max="40" step="0.5" value="3"></label>
+      <label class="field"><span>Shortest tick (mm)</span>
+        <input type="number" id="kMin" min="0.2" step="0.1" value="0.9"></label>
+      <label class="field"><span>Longest tick (mm)</span>
+        <input type="number" id="kMax" min="0.3" step="0.1" value="2.5"></label>
+      <label class="check"><input type="checkbox" id="kFixed">
+        All one length — the grading-plan tick, not the terrain hachure</label>
+      <label class="check"><input type="checkbox" id="kIndexOnly">
+        Index contours only — far fewer marks</label>
+      <label class="field"><span>Leave ground flatter than (°) bare</span>
+        <input type="number" id="kMinSlope" min="0" max="80" step="1" value="0"></label>
+      <label class="field"><span>On pass</span><select id="kPass"></select></label>
+      <p class="why">⚠️ Downhill is read from the ground itself, not from which way the contour
+        was traced — a hachure pointing the wrong way turns a hill into a hollow with no other
+        symptom. Every tick is a separate head move, so the count is reported before you export.</p>
 
-    <div class="subhead">Contours modulated by a second value</div>
-    <p class="why">The contour keeps its height and picks up a second quantity as its <b>ink</b>:
-      solid where the value is high, breaking to dots where it is low. One line, two readings,
-      no extra pass. Point it at slope, or at a wetness raster, and a contour tells you where
-      the ground is steep or wet as you follow it.</p>
-    <label class="check"><input type="checkbox" id="dOn">
-      Modulate the contours by a field</label>
-    <label class="field"><span>Values</span><select id="dSource"></select></label>
-    <label class="field"><span>Period (mm)</span>
-      <input type="number" id="dPeriod" min="0.5" max="30" step="0.5" value="2"></label>
-    <label class="field"><span>Least ink (%)</span>
-      <input type="number" id="dMinInk" min="0" max="100" step="5" value="5"></label>
-    <label class="field"><span>Most ink (%)</span>
-      <input type="number" id="dMaxInk" min="0" max="100" step="5" value="100"></label>
-    <label class="check"><input type="checkbox" id="dInvert">
-      Invert — break the line where the value is <b>high</b></label>
-    <p class="why">⚠️ Modulation replaces the line style above rather than stacking with it:
-      two dash patterns cut into one line leave a stutter that is neither and measures nothing.
-      The period stays constant and the mark inside it varies — the eye reads that as tone.</p>
-    <p class="why" id="dNote"></p>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Datum</summary>
+      <div class="sub-body">
+      <label class="field"><span>Heights are</span>
+        <select id="cDatum">
+          <option value="absolute">Absolute — metres above sea level</option>
+          <option value="local">Local — above the lowest point here</option>
+        </select></label>
 
-    <div class="subhead">From QGIS</div>
-    <div id="dropzone4">
-      <div class="dz" id="dropStyle"><strong>Layer style</strong>
-        <span class="act">Choose a .qml or .sld, or drop it here</span>
-        <span class="fine">Saved from QGIS. Applies to the layer selected above, and every
-          decision it makes is logged.</span></div>
-    </div>
-    <label class="check"><input type="checkbox" id="qCut">
-      Allow a style's colour to choose a <b>cut</b> pass</label>
-    <p class="why">⚠️ Off by default, and deliberately. Red in QGIS means "draw it red"; red
-      here is the pass that cuts through. A red contour style mapped naively would cut the
-      model into rings.</p>
-    <div id="qLog"></div>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Second material</summary>
+      <div class="sub-body">
+      <p class="why">One threshold turns this layer into patches — everywhere the value exceeds
+        it. Disturbance is the worked example: threshold the difference between two epochs and
+        the patches are the ground that moved.</p>
+      <label class="check"><input type="checkbox" id="mOn"> Cut regions from a threshold</label>
+      <label class="field"><span>Values</span>
+        <select id="mSource"></select></label>
+      <label class="check"><input type="checkbox" id="mAbs" checked>
+        Use the magnitude — |value| — so cut and fill both count</label>
+      <label class="field"><span>Threshold</span>
+        <input type="number" id="mThresh" step="0.1" min="0" value="1"></label>
+      <label class="field"><span>Construction</span>
+        <select id="mMode">
+          <option value="overlay">Overlay — pieces cut from a second sheet, glued on</option>
+          <option value="window">Window — voids cut through the base sheet</option>
+        </select></label>
+      <p class="why">Overlay is added ground standing proud by its own thickness; window is
+        removed ground, a real void. Two sheets get registration holes cut through both —
+        pin them with dowels before gluing.</p>
+      <label class="field"><span>Cut on pass</span><select id="mPass"></select></label>
+      <label class="field"><span>Ignore patches smaller than (m²)</span>
+        <input type="number" id="mMinArea" step="1" min="0" value="4"></label>
+      <label class="check"><input type="checkbox" id="mLabels" checked>
+        Engrave each patch's mean value at its deepest point</label>
+      <p class="why" id="mNote"></p>
 
-    <div class="subhead">Datum</div>
-    <label class="field"><span>Heights are</span>
-      <select id="cDatum">
-        <option value="absolute">Absolute — metres above sea level</option>
-        <option value="local">Local — above the lowest point here</option>
-      </select></label>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Change as circles</summary>
+      <div class="sub-body">
+      <p class="why">The values sampled on a regular grid, each sample a circle whose diameter
+        is the magnitude — a grading plan's read of cut and fill. Point it at the difference
+        between two epochs and the circles are the ground that moved, sized by how much; at
+        the layer's own values for elevation; at its slope for steepness as marks. A raster
+        exported from another tool (a slope or wetness surface) loads as a layer like any
+        other and can be drawn the same way.</p>
+      <label class="check"><input type="checkbox" id="gOn"> Draw a circle grid from the values</label>
+      <label class="field"><span>Values</span>
+        <select id="gSource"></select></label>
+      <label class="check"><input type="checkbox" id="gSigned" checked>
+        Tell cut from fill — the sign picks the symbol</label>
+      <label class="field"><span>Fill (+), ground added</span>
+        <select id="gStylePlus">
+          <option value="hatched">Hatched circle</option>
+          <option value="outline">Outline only</option>
+          <option value="engraved">Solid — filled by the engrave pass</option>
+        </select></label>
+      <label class="field"><span>Cut (−), ground excavated</span>
+        <select id="gStyleMinus">
+          <option value="outline">Outline only</option>
+          <option value="hatched">Hatched circle</option>
+          <option value="engraved">Solid — filled by the engrave pass</option>
+        </select></label>
+      <label class="field"><span>Hatch spacing (mm)</span>
+        <input type="number" id="gHatchMM" min="0.2" max="5" step="0.1" value="0.6"></label>
+      <p class="why">⚠️ <b>The difference is drawn, not left to the machine.</b> A circle on the
+        engrave pass looks solid on screen, but what the file carries is an outline — whether it
+        comes out filled depends on that pass being set to raster in JobControl. Hatching puts
+        the distinction in the geometry, where no machine setting can lose it. On material there
+        is no colour to fall back on.</p>
+      <p class="why">Both sides share one scale — the largest magnitude either way — so equal
+        movement is an equal circle whichever way the ground went, growing from nothing at zero
+        out to full size at the extreme. ⚠️ A hatched circle is many marks, not one; the fill-line
+        count is reported before you export.</p>
+      <label class="field"><span>Circles across the sheet</span>
+        <input type="number" id="gAcross" min="4" max="200" step="1" value="40"></label>
+      <label class="field"><span>Largest circle — % of the spacing</span>
+        <input type="number" id="gMax" min="5" max="100" step="5" value="90"></label>
+      <label class="field"><span>Smallest — % of the largest</span>
+        <input type="number" id="gMin" min="0" max="90" step="1" value="12"></label>
+      <label class="field"><span>Ignore |values| below</span>
+        <input type="number" id="gMinAbs" min="0" step="0.1" value="0"></label>
+      <label class="field"><span>Fill (+) on pass</span><select id="gPassPlus"></select></label>
+      <label class="field"><span>Cut (−) on pass</span><select id="gPassMinus"></select></label>
+      <p class="why" id="gNote"></p>
 
-    <div class="subhead">Second material</div>
-    <p class="why">One threshold turns this layer into patches — everywhere the value exceeds
-      it. Disturbance is the worked example: threshold the difference between two epochs and
-      the patches are the ground that moved.</p>
-    <label class="check"><input type="checkbox" id="mOn"> Cut regions from a threshold</label>
-    <label class="field"><span>Values</span>
-      <select id="mSource"></select></label>
-    <label class="check"><input type="checkbox" id="mAbs" checked>
-      Use the magnitude — |value| — so cut and fill both count</label>
-    <label class="field"><span>Threshold</span>
-      <input type="number" id="mThresh" step="0.1" min="0" value="1"></label>
-    <label class="field"><span>Construction</span>
-      <select id="mMode">
-        <option value="overlay">Overlay — pieces cut from a second sheet, glued on</option>
-        <option value="window">Window — voids cut through the base sheet</option>
-      </select></label>
-    <p class="why">Overlay is added ground standing proud by its own thickness; window is
-      removed ground, a real void. Two sheets get registration holes cut through both —
-      pin them with dowels before gluing.</p>
-    <label class="field"><span>Cut on pass</span><select id="mPass"></select></label>
-    <label class="field"><span>Ignore patches smaller than (m²)</span>
-      <input type="number" id="mMinArea" step="1" min="0" value="4"></label>
-    <label class="check"><input type="checkbox" id="mLabels" checked>
-      Engrave each patch's mean value at its deepest point</label>
-    <p class="why" id="mNote"></p>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Change as hatching</summary>
+      <div class="sub-body">
+      <p class="why">The same values as line <b>density</b>: parallel scanlines that run solid
+        where the value is strong and break into shorter dashes as it weakens. This is the read
+        for a surface with no meaningful contour — a slope raster, a wetness index — where what
+        you want is tone and a laser has no tone but marks.</p>
+      <label class="check"><input type="checkbox" id="hhOn"> Hatch the values</label>
+      <label class="field"><span>Values</span>
+        <select id="hhSource"></select></label>
+      <label class="field"><span>Line spacing (mm on the sheet)</span>
+        <input type="number" id="hhSpacing" min="0.4" max="20" step="0.1" value="2"></label>
+      <label class="field"><span>Angle (°)</span>
+        <input type="number" id="hhAngle" min="0" max="180" step="5" value="45"></label>
+      <label class="check"><input type="checkbox" id="hhInvert">
+        Put the ink on the <b>low</b> values instead</label>
+      <label class="field"><span>Draw nothing below</span>
+        <input type="number" id="hhFloor" step="0.5" value="0"></label>
+      <label class="field"><span>On pass</span><select id="hhPass"></select></label>
+      <p class="why">⚠️ Every dash is a pierce. A run at full density leaves as one continuous
+        path, and a dash under 0.3 mm is dropped rather than burned in place — but the mark
+        count is still the job, and it is reported before you write the file.</p>
+      <p class="why" id="hhNote"></p>
 
-    <div class="subhead">Change as circles</div>
-    <p class="why">The values sampled on a regular grid, each sample a circle whose diameter
-      is the magnitude — a grading plan's read of cut and fill. Point it at the difference
-      between two epochs and the circles are the ground that moved, sized by how much; at
-      the layer's own values for elevation; at its slope for steepness as marks. A raster
-      exported from another tool (a slope or wetness surface) loads as a layer like any
-      other and can be drawn the same way.</p>
-    <label class="check"><input type="checkbox" id="gOn"> Draw a circle grid from the values</label>
-    <label class="field"><span>Values</span>
-      <select id="gSource"></select></label>
-    <label class="check"><input type="checkbox" id="gSigned" checked>
-      Tell cut from fill — the sign picks the symbol</label>
-    <label class="field"><span>Fill (+), ground added</span>
-      <select id="gStylePlus">
-        <option value="hatched">Hatched circle</option>
-        <option value="outline">Outline only</option>
-        <option value="engraved">Solid — filled by the engrave pass</option>
-      </select></label>
-    <label class="field"><span>Cut (−), ground excavated</span>
-      <select id="gStyleMinus">
-        <option value="outline">Outline only</option>
-        <option value="hatched">Hatched circle</option>
-        <option value="engraved">Solid — filled by the engrave pass</option>
-      </select></label>
-    <label class="field"><span>Hatch spacing (mm)</span>
-      <input type="number" id="gHatchMM" min="0.2" max="5" step="0.1" value="0.6"></label>
-    <p class="why">⚠️ <b>The difference is drawn, not left to the machine.</b> A circle on the
-      engrave pass looks solid on screen, but what the file carries is an outline — whether it
-      comes out filled depends on that pass being set to raster in JobControl. Hatching puts
-      the distinction in the geometry, where no machine setting can lose it. On material there
-      is no colour to fall back on.</p>
-    <p class="why">Both sides share one scale — the largest magnitude either way — so equal
-      movement is an equal circle whichever way the ground went, growing from nothing at zero
-      out to full size at the extreme. ⚠️ A hatched circle is many marks, not one; the fill-line
-      count is reported before you export.</p>
-    <label class="field"><span>Circles across the sheet</span>
-      <input type="number" id="gAcross" min="4" max="200" step="1" value="40"></label>
-    <label class="field"><span>Largest circle — % of the spacing</span>
-      <input type="number" id="gMax" min="5" max="100" step="5" value="90"></label>
-    <label class="field"><span>Smallest — % of the largest</span>
-      <input type="number" id="gMin" min="0" max="90" step="1" value="12"></label>
-    <label class="field"><span>Ignore |values| below</span>
-      <input type="number" id="gMinAbs" min="0" step="0.1" value="0"></label>
-    <label class="field"><span>Fill (+) on pass</span><select id="gPassPlus"></select></label>
-    <label class="field"><span>Cut (−) on pass</span><select id="gPassMinus"></select></label>
-    <p class="why" id="gNote"></p>
-
-    <div class="subhead">Change as hatching</div>
-    <p class="why">The same values as line <b>density</b>: parallel scanlines that run solid
-      where the value is strong and break into shorter dashes as it weakens. This is the read
-      for a surface with no meaningful contour — a slope raster, a wetness index — where what
-      you want is tone and a laser has no tone but marks.</p>
-    <label class="check"><input type="checkbox" id="hhOn"> Hatch the values</label>
-    <label class="field"><span>Values</span>
-      <select id="hhSource"></select></label>
-    <label class="field"><span>Line spacing (mm on the sheet)</span>
-      <input type="number" id="hhSpacing" min="0.4" max="20" step="0.1" value="2"></label>
-    <label class="field"><span>Angle (°)</span>
-      <input type="number" id="hhAngle" min="0" max="180" step="5" value="45"></label>
-    <label class="check"><input type="checkbox" id="hhInvert">
-      Put the ink on the <b>low</b> values instead</label>
-    <label class="field"><span>Draw nothing below</span>
-      <input type="number" id="hhFloor" step="0.5" value="0"></label>
-    <label class="field"><span>On pass</span><select id="hhPass"></select></label>
-    <p class="why">⚠️ Every dash is a pierce. A run at full density leaves as one continuous
-      path, and a dash under 0.3 mm is dropped rather than burned in place — but the mark
-      count is still the job, and it is reported before you write the file.</p>
-    <p class="why" id="hhNote"></p>
-
-    <div class="subhead">Sections</div>
-    <p class="why">The ground cut open: parallel cuts across the plate, each profile engraved
-      along the line it was taken from. Three cuts put one exactly on the centre line. The
-      profile rides on its own cut because a zero margin leaves nowhere to stack it — and a
-      plate that must tile with its neighbours cannot be resized to make room.</p>
-    <label class="check"><input type="checkbox" id="xOn"> Cut sections through the plate</label>
-    <label class="field"><span>How many</span>
-      <input type="number" id="xCount" min="1" max="9" step="1" value="3"></label>
-    <label class="field"><span>Running</span>
-      <select id="xAxis">
-        <option value="horizontal">Horizontally — west to east</option>
-        <option value="vertical">Vertically — south to north</option>
-      </select></label>
-    <label class="field"><span>Profile height (mm)</span>
-      <input type="number" id="xHeight" min="2" max="120" step="1" value="12"></label>
-    <label class="field"><span>Datum</span>
-      <select id="xDatum">
-        <option value="own">Own — each cut fills its own height</option>
-        <option value="shared">Shared — the cuts compare with each other</option>
-      </select></label>
-    <p class="why">⚠️ The vertical is exaggerated, always, and by a lot at plate scale. The
-      tool computes the true factor from the height you allow and states it in the readout and
-      the cutting report — put it on the drawing.</p>
-    <label class="check"><input type="checkbox" id="xLabels" checked>
-      Letter each cut at both ends — A, A.</label>
-    <label class="field"><span>Profiles on pass</span><select id="xPass"></select></label>
-    <label class="field"><span>Cut lines on pass</span><select id="xLinePass"></select></label>
+      </div>
+    </details>
+    <details class="sub">
+      <summary class="subhead">Sections</summary>
+      <div class="sub-body">
+      <p class="why">The ground cut open: parallel cuts across the plate, each profile engraved
+        along the line it was taken from. Three cuts put one exactly on the centre line. The
+        profile rides on its own cut because a zero margin leaves nowhere to stack it — and a
+        plate that must tile with its neighbours cannot be resized to make room.</p>
+      <label class="check"><input type="checkbox" id="xOn"> Cut sections through the plate</label>
+      <label class="field"><span>How many</span>
+        <input type="number" id="xCount" min="1" max="9" step="1" value="3"></label>
+      <label class="field"><span>Running</span>
+        <select id="xAxis">
+          <option value="horizontal">Horizontally — west to east</option>
+          <option value="vertical">Vertically — south to north</option>
+        </select></label>
+      <label class="field"><span>Profile height (mm)</span>
+        <input type="number" id="xHeight" min="2" max="120" step="1" value="12"></label>
+      <label class="field"><span>Datum</span>
+        <select id="xDatum">
+          <option value="own">Own — each cut fills its own height</option>
+          <option value="shared">Shared — the cuts compare with each other</option>
+        </select></label>
+      <p class="why">⚠️ The vertical is exaggerated, always, and by a lot at plate scale. The
+        tool computes the true factor from the height you allow and states it in the readout and
+        the cutting report — put it on the drawing.</p>
+      <label class="check"><input type="checkbox" id="xLabels" checked>
+        Letter each cut at both ends — A, A.</label>
+      <label class="field"><span>Profiles on pass</span><select id="xPass"></select></label>
+      <label class="field"><span>Cut lines on pass</span><select id="xLinePass"></select></label>
+      </div>
+    </details>
     </div>
 
-    <div class="subhead" style="border-top:1px solid var(--line);padding-top:9px">Readout</div>
-    <div id="figs"></div>
-    <div id="readBody"></div>
+    <!-- ⚠️ THE PHOTOGRAPHS AS ONE LAYER. They are a set, not a list of
+         separately styled objects — one mark shape and one size for all of them —
+         so they behave as a single selectable layer whose properties are these. -->
+    <div id="propPhotos" hidden>
+    <p class="note warn" id="gpsNote">A phone fixes its position to about 5–10 m. At this
+      scale that is <b id="gpsMM">—</b> on the sheet, often larger than the symbol it places.
+      <b>Drag a point on the drawing</b> to correct it against the terrain.</p>
+    <label class="check"><input type="checkbox" id="pOn" checked> Draw photographs</label>
+    <label class="field"><span>Mark</span>
+      <select id="pMark">
+        <option>circle</option><option>square</option><option>triangle</option>
+        <option>cross</option><option>diamond</option></select></label>
+    <label class="field"><span>Size <em id="pSizeV">3 mm</em></span>
+      <input type="range" id="pSize" min="1" max="10" step="0.25" value="3"></label>
+    <label class="check"><input type="checkbox" id="pNum" checked> Engrave numbers</label>
+    <label class="check"><input type="checkbox" id="pBear" checked> Draw the bearing</label>
+    <label class="check"><input type="checkbox" id="pHalo"> Draw the GPS uncertainty</label>
+    <details class="sub">
+      <summary class="subhead">The photographs</summary>
+      <div class="sub-body">
+      <div class="plist" id="plist"></div>
+      </div>
+    </details>
+    </div>
+
+    <!-- ⚠️ THE ORTHOPHOTO'S OWN PROPERTIES. This was the "Engrave" panel in
+         the left menu, which meant the settings for one loaded object lived in a
+         section of their own while every other object's settings were in the
+         inspector. Selecting the image now shows this, and nothing else does. -->
+    <div id="propImage" hidden>
+    <p class="why">A laser draws marks, not pixels. There are two honest ways to put a
+      photograph on material, and they are different tools.</p>
+    <label class="check"><input type="checkbox" id="hOn"> Engrave the image</label>
+    <label class="field"><span>As</span>
+      <select id="hMode">
+        <option value="vector">Halftone circles — one value</option>
+        <option value="triple">Halftone circles — three values at once</option>
+      </select></label>
+    <label class="field"><span>Samples across <em id="hAcrossV">70</em></span>
+      <input type="range" id="hAcross" min="10" max="200" step="2" value="70"></label>
+    <p class="note" id="hBudget">No image loaded.</p>
+    <label class="field" id="rowChan"><span>Value</span><select id="hChan"></select></label>
+    <p class="why" id="hChanHint"></p>
+    <div id="rowTriple" hidden>
+      <label class="field"><span>Outer circle</span><select id="hC1"></select></label>
+      <label class="field"><span>Middle circle</span><select id="hC2"></select></label>
+      <label class="field"><span>Inner circle</span><select id="hC3"></select></label>
+      <p class="why">Three circles about one centre, each on its own laser pass. Raw red,
+        green and blue engrave correctly but a reader cannot recover a landscape quantity
+        from their radii — the derived values can be named out loud.</p>
+    </div>
+    </div>
+
+    <div id="featStyle" hidden>
+      <label class="field"><span>Draw on pass</span><select id="ftPass"></select></label>
+
+      <div id="ftAreaOnly">
+        <label class="field"><span>Fill pattern</span><select id="ftPattern"></select></label>
+        <label class="field"><span>Fill spacing (mm)</span>
+          <input type="number" id="ftSpacing" min="0.3" max="20" step="0.1" value="2"></label>
+        <label class="field"><span>Fill angle (°)</span>
+          <input type="number" id="ftRotation" min="0" max="180" step="5" value="45"></label>
+        <label class="check"><input type="checkbox" id="ftOutline" checked>
+          Draw the outline too</label>
+
+        <details class="sub">
+          <summary class="subhead">Density by an attribute</summary>
+          <div class="sub-body">
+          <p class="why">⚠️ Inverted on purpose: a <b>high</b> value gives a <b>tighter</b>
+            fill, because density is what a reader sees. Mapped the obvious way round, the
+            densest planting would come out as the emptiest hatch.</p>
+          <label class="field"><span>Field</span><select id="ftDensField"></select></label>
+          <label class="field"><span>From</span>
+            <input type="number" id="ftDensLo" step="any" value="0"></label>
+          <label class="field"><span>To</span>
+            <input type="number" id="ftDensHi" step="any" value="0"></label>
+          <label class="field"><span>Tightest (mm)</span>
+            <input type="number" id="ftDensMin" min="0.3" step="0.1" value="0.8"></label>
+          <label class="field"><span>Loosest (mm)</span>
+            <input type="number" id="ftDensMax" min="0.4" step="0.1" value="5"></label>
+          </div>
+        </details>
+      </div>
+
+      <div id="ftPointOnly">
+        <label class="field"><span>Symbol</span><select id="ftSymbol"></select></label>
+        <label class="field"><span>Symbol radius (mm)</span>
+          <input type="number" id="ftRadius" min="0.3" max="30" step="0.1" value="2"></label>
+
+        <details class="sub">
+          <summary class="subhead">Size by an attribute</summary>
+          <div class="sub-body">
+          <p class="why">Pick a numeric column from the .dbf and the symbol grows with it.
+            ⚠️ Scaled by <b>area</b>, not radius: a circle of twice the radius covers four
+            times the paper, so scaling the radius directly makes every large value look
+            several times bigger than it is.</p>
+          <label class="field"><span>Field</span><select id="ftSizeField"></select></label>
+          <label class="field"><span>From</span>
+            <input type="number" id="ftSizeLo" step="any" value="0"></label>
+          <label class="field"><span>To</span>
+            <input type="number" id="ftSizeHi" step="any" value="0"></label>
+          <label class="field"><span>Smallest (mm)</span>
+            <input type="number" id="ftSizeMin" min="0.2" step="0.1" value="1.2"></label>
+          <label class="field"><span>Largest (mm)</span>
+            <input type="number" id="ftSizeMax" min="0.3" step="0.1" value="5"></label>
+          <label class="field"><span>Scaling</span>
+            <select id="ftSizeMode">
+              <option value="area">Area — honest for quantities</option>
+              <option value="linear">Radius — the Hadseløya convention</option>
+            </select></label>
+          <p class="why">Set <b>From</b> to 0 for true proportionality, where a value of
+            nothing is a symbol of nothing. Otherwise the range is graded between the two
+            sizes.</p>
+
+          </div>
+        </details>
+        <details class="sub">
+          <summary class="subhead">Turn by an attribute</summary>
+          <div class="sub-body">
+          <p class="why">⚠️ Only the directional symbols show it — turning a circle is a null
+            operation. A field already in <b>degrees</b> (an aspect, a bearing) is used as is,
+            clockwise from north; any other field has no angular meaning, so its range is
+            spread over a full turn and the result is a pattern rather than a direction.</p>
+          <label class="field"><span>Field</span><select id="ftRotField"></select></label>
+          <label class="field"><span>Read as</span>
+            <select id="ftRotMode">
+              <option value="degrees">Degrees, clockwise from north</option>
+              <option value="range">Its range, spread over a full turn</option>
+            </select></label>
+          <label class="field"><span>Offset (°)</span>
+            <input type="number" id="ftRotOffset" step="5" value="0"></label>
+          <label class="field"><span>Inside the symbol</span>
+            <select id="ftPointFill"></select></label>
+          <label class="field"><span>Inside spacing (mm)</span>
+            <input type="number" id="ftPointSpacing" min="0.2" max="10" step="0.1" value="1"></label>
+          </div>
+        </details>
+      </div>
+
+      <label class="field"><span>Line style</span><select id="ftLinetype"></select></label>
+      <label class="field"><span>Line style scale</span>
+        <input type="number" id="ftScale" min="0.2" max="10" step="0.1" value="1"></label>
+      <button class="link" id="ftRemove" style="font-size:.66rem">Remove this layer</button>
+      <p class="why">⚠️ A fill is many separate strokes, and every one is a head move. The
+        count is reported before you export. ⚠️ These line styles are the Slicer's own
+        measured run lengths — a dot is 0.4 mm because 0.1 mm burns were invisible on
+        cardboard.</p>
+    </div>
+    </div>
+
+    <details class="sub">
+      <summary class="subhead" style="border-top:1px solid var(--line);padding-top:9px">Readout</summary>
+      <div class="sub-body">
+      <div id="figs"></div>
+      <div id="readBody"></div>
+      </div>
+    </details>
   </section>
 </main>
 
@@ -910,11 +1159,14 @@ details.panel[open] > summary .sec-badge { display: none; }
 <input type="file" id="fileDEM" accept=".tif,.tiff" multiple hidden>
 <input type="file" id="filePhotos" accept="image/jpeg,image/*" multiple hidden>
 <input type="file" id="fileImage" accept=".tif,.tiff,image/*" hidden>
-<input type="file" id="fileStyle" accept=".qml,.sld,.xml" hidden>
-<input type="file" id="fileClip" accept=".shp,.dbf" multiple hidden>
-<input type="file" id="fileFeatPolygon" accept=".shp,.dbf" multiple hidden>
-<input type="file" id="fileFeatLine" accept=".shp,.dbf" multiple hidden>
-<input type="file" id="fileFeatPoint" accept=".shp,.dbf" multiple hidden>
+<input type="file" id="fileClip" accept=".shp,.dbf,.prj,.shx,.cpg,.gml,.xml" multiple hidden>
+<!-- ⚠️ THE IMPORT STRIPS NEED THEIR OWN INPUTS, not a second wireDrop() onto the
+     three above: wireDrop adds a `change` listener per call, so sharing one
+     input would fire the loader twice and load every shapefile twice over. The
+     HANDLER is shared instead, which is where divergence would actually hurt. -->
+<input type="file" id="fileImpFeatPolygon" accept=".shp,.dbf,.prj,.shx,.cpg,.gml,.xml" multiple hidden>
+<input type="file" id="fileImpFeatLine" accept=".shp,.dbf,.prj,.shx,.cpg,.gml,.xml" multiple hidden>
+<input type="file" id="fileImpFeatPoint" accept=".shp,.dbf,.prj,.shx,.cpg,.gml,.xml" multiple hidden>
 
 <script type="module" src="static/app.js"></script>
 </body>

@@ -64,7 +64,7 @@ body {
 /* ---------- upload targets ----------
    ⚠️ STYLED BY CLASS, NOT BY THE FIRST ZONE'S ID. This block used to read
    `#dropzone .dz`, which styled the terrain target and NOTHING ELSE: the
-   photographs, the orthophoto, the QGIS style and the tile boundary all
+   photographs, the orthophoto, the feature layers and the tile boundary all
    rendered as bare text with no border, no padding and no pointer cursor, so
    four of the five places you can load a file did not look like places you
    could load a file. Marc asked where the tile boundary was loaded, which is

@@ -23,13 +23,15 @@ import { differenceDEM } from "./regions.js";
 import { fitScale, SCALE_LADDER } from "./sheet.js";
 import { CHANNELS } from "./halftone.js";
 import { LINE_STYLES, STYLE_ORDER, styleLabel } from "./linestyle.js";
-import { readQGISStyle, translateToContours } from "./qgis.js";
 import { buildTestSheet, testSheetProcedure } from "./testsheet.js";
 import { toSVG } from "./svg.js";
 import { PASS_COLOURS, PASS_LABELS, passColour } from "./dxf.js";
 import { niceInterval } from "./contours.js";
 import { slopeDegrees } from "./symbols.js";
-import { readShapefile } from "./shapefile.js";
+import { readShapefile, readPRJ } from "./shapefile.js";
+import { readGML } from "./gml.js";
+import { drawingToShapefiles, zipStore } from "./shp-write.js";
+import { rasterPlan, paintEngraving, cutLinesOnly } from "./raster.js";
 import { readDBF, assertPairs, fieldRange } from "./dbf.js";
 import { FILL_PATTERNS, PATTERN_ORDER } from "./patterns.js";
 import { FEATURE_DEFAULTS, FEATURE_LINETYPES, LINETYPE_ORDER,
@@ -59,6 +61,15 @@ const state = {
   // without reloading the file.
   /** @type {any} */ clip: null,
   clipOn: false,
+  // ⚠️ Which imported layer is serving as the tile boundary, by ID. Null when
+  // the boundary was dropped straight onto the clip strip, or when there is none.
+  // ⚠️ WHAT THE INSPECTOR IS LOOKING AT. The right-hand window is the property
+  // sheet for the SELECTED OBJECT, and the tool holds two kinds — raster layers
+  // and feature layers — in two lists. One selection spans both: clicking in
+  // either list moves it, so the inspector always has exactly one subject and
+  // the two lists cannot both look selected at once.
+  selKind: "raster",
+  clipFromFeature: null,
   // Drawn shapefile layers - points, lines and areas, each with its own style.
   /** @type {any[]} */ features: [],
   activeFeature: 0,
@@ -94,11 +105,56 @@ const fmtNum = (v) => (Number.isFinite(v) ? String(+(+v).toFixed(3)) : "—");
 /** Set once the grip exists; the panel drag and the fold both move it. */
 let syncGrip = () => {};
 
-$("readoutMin").addEventListener("click", () => {
-  const r = $("readout");
-  r.classList.toggle("min");
-  $("readoutMin").textContent = r.classList.contains("min") ? "+" : "–";
-});
+// ── interface density, and remembering it ───────────────────────────────────
+// ⚠️ EVERY READ AND WRITE IS WRAPPED. `localStorage` throws outright in a
+// private window, when site data is blocked, and from a `file://` page — and
+// this tool is one people are told to run locally. A preference that cannot be
+// saved must cost nothing; the tool opens at its defaults and works.
+const REMEMBER = {
+  /** @param {string} k @param {string|null} fallback */
+  get(k, fallback = null) {
+    try { const v = localStorage.getItem("dltm." + k); return v === null ? fallback : v; }
+    catch { return fallback; }
+  },
+  /** @param {string} k @param {string} v */
+  set(k, v) { try { localStorage.setItem("dltm." + k, v); } catch { /* not offered */ } },
+};
+
+/**
+ * Hide the explanatory prose once it has been read.
+ *
+ * ⚠️ THE TOOL DOES NOT GET QUIETER, ONLY LESS TALKATIVE. Only `.why` and
+ * `.fine` go — see the stylesheet for why `.note` and `.meta` must not.
+ * @param {boolean} terse
+ */
+function setTerse(terse) {
+  document.body.classList.toggle("terse", terse);
+  const b = $("explainToggle");
+  b.setAttribute("aria-pressed", String(terse));
+  b.title = terse ? "Show the explanations" : "Hide the explanations";
+  REMEMBER.set("terse", terse ? "1" : "0");
+  setTimeout(syncGrip, 0);
+}
+$("explainToggle").addEventListener("click", () =>
+  setTerse(!document.body.classList.contains("terse")));
+setTerse(REMEMBER.get("terse") === "1");
+
+// ⚠️ THE PANELS OPEN THE WAY THEY WERE LEFT — which is the honest way to give a
+// familiar user a compact interface without taking the front door away from a
+// new one. A first visit gets the defaults in the markup, where every fold that
+// accepts a file is open; after that the tool remembers. Marc asked three times
+// in one session where to load something, and this keeps that fix intact for
+// the person it was for.
+// ⚠️ EVERY FOLD STARTS CLOSED, EVERY TIME. This used to remember what you
+// left open, which sounds kinder and is not: it means the page you arrive at
+// depends on what you did days ago, so "all menus collapsed" was true on a
+// machine that had never run the tool and false on Marc's. A tool that opens
+// the same way every time can be reasoned about; one that opens differently per
+// browser cannot. Discoverability is not what the memory was protecting any
+// more — a file dropped ANYWHERE loads and opens the fold it landed in.
+for (const d of document.querySelectorAll("details.panel, details.sub")) d.open = false;
+
+
 
 // ── the menu window: fold, and drag by its header ───────────────────────────
 // ⚠️ FOLD AND UNFOLD HAPPEN UNDER THE SAME PIXEL. The chip is placed on the
@@ -111,11 +167,30 @@ $("readoutMin").addEventListener("click", () => {
 // travel when the window is dragged. A control that hides the menu must not be
 // somewhere the menu has been moved to.
 function foldMenu(folded) {
+  // ⚠️ ONE CONTROL, BOTH WINDOWS (Marc). They are two halves of one
+  // interface — the lists you compose from and the sheet for whatever is
+  // selected — and wanting the ground clear means wanting both out of the way.
+  // Two separate fold buttons meant two clicks to see the drawing and a state
+  // where half the chrome was still over it.
   $("sidebar").classList.toggle("min", folded);
+  $("readout").classList.toggle("min", folded);
   $("menu-min").hidden = folded;
   $("menu-chip").hidden = !folded;
   syncGrip();
   resize();
+}
+
+/**
+ * ⚠️ THE INSPECTOR IS NOT SHOWN WHEN THERE IS NOTHING TO INSPECT. With no
+ * raster and no feature loaded it is a full-height property sheet for an object
+ * that does not exist, standing over the one message a new arrival needs. It
+ * has no fold button of its own any more, so this is what keeps it out of the
+ * way — and it comes back on its own the moment something is loaded.
+ */
+function syncWindows() {
+  const nothing = !state.layers.length && !state.features.length
+    && !state.image && !state.photos.length;
+  $("readout").classList.toggle("empty", nothing);
 }
 for (const d of document.querySelectorAll("details.panel")) {
   d.addEventListener("toggle", () => setTimeout(syncGrip, 0));
@@ -405,87 +480,256 @@ function moveLayer(from, to) {
   syncLayer(); paintLayers(); recompile();
 }
 
-function paintLayers() {
-  const host = $("layerList");
-  host.innerHTML = "";
-  // The list changes the panel's height, so the grip must follow it.
-  setTimeout(syncGrip, 0);
-  if (!state.layers.length) return;
-  state.layers.forEach((L, i) => {
-    const el = document.createElement("div");
-    el.className = "pitem" + (i === state.active ? " sel" : "") + (L.on ? "" : " off");
-    const c = L.contours;
-    // ⚠️ THE SWATCH IS THE PASS COLOUR, WHICH IS THE MACHINE OPERATION. It is
-    // not a legend colour chosen for the screen — see PASS_COLOURS in dxf.js.
-    // ⚠️ styleLabel, NOT LINE_STYLES[...].label. A style imported from QGIS is
-    // "custom" and has no entry in the table, so the direct lookup was
-    // `undefined.label` — a throw that aborted the whole import handler one line
-    // before it reached recompile(). The symptom was baffling: the controls
-    // showed the imported style, the log listed every decision, and the drawing
-    // silently stayed as it was.
-    el.innerHTML = `<span class="drag" aria-hidden="true">\u283f</span>
-      <span class="n" style="background:${passColour(c.pass)}">${i + 1}</span>
-      <span class="grow">${esc(L.name)}</span>
-      <span class="val">${i === 0 ? "primary · " : ""}${esc(styleLabel(c.style, c.customDash))}</span>`;
-    // ⚠️ THE FULL NAME GOES FIRST IN THE TOOLTIP. The row truncates with an
-    // ellipsis, and a title that explained what clicking does — which is what
-    // this used to say — is the one thing the user can already guess. Site
-    // rasters are named things like LAR3072_A1_plate_A1_DTM_1m, where every
-    // distinguishing character is at the END and every truncated row therefore
-    // looks identical to its neighbour.
-    el.title = `${L.name}
-${L.dem.ncols}×${L.dem.nrows} at ${L.dem.cell} m`
-      + `${L.dem.crs ? ", " + L.dem.crs : ""}
-`
-      + `${styleLabel(c.style, c.customDash)} on ${c.pass}
-`
-      + (i === 0 ? "The primary raster defines the sheet. Click to edit its contours."
-                 : "Click to edit this raster's contours.");
-    el.addEventListener("click", () => { state.active = i; syncLayer(); paintLayers(); });
 
-    // ⚠️ THE ORDER IS LOAD-BEARING: layer 1 is the PRIMARY and defines the
-    // sheet. Dragging a raster to the top therefore resizes the drawing, which
-    // is exactly why someone would do it — a 2 x 2 km context tile can be made
-    // primary to get a context sheet, or demoted to sit inside a plate.
+/**
+ * Show the property sheet for whatever is selected, and name it.
+ *
+ * ⚠️ THE WINDOW MUST NAME ITS SUBJECT. A panel of controls that does not say
+ * what it is editing is a panel you distrust — and now that it serves two kinds
+ * of object, the title is the only thing distinguishing "the contour interval of
+ * this raster" from "the fill pattern of this shapefile".
+ *
+ * ⚠️ EXACTLY ONE BLOCK IS VISIBLE. Feature styling used to live in the left
+ * menu, so styling controls appeared on BOTH sides of the screen, divided by
+ * which kind of object they belonged to — a distinction nobody can see from the
+ * outside, and Marc's own reason for asking. Left is what you load and compose;
+ * right is what the selected thing IS.
+ */
+function syncInspector() {
+  const kind = state.selKind;
+  const f = kind === "feature" ? activeFeature() : null;
+  const L = activeLayer();
+  // ⚠️ ONE BLOCK PER KIND OF LAYER, AND ONLY EVER ONE VISIBLE. Every control a
+  // layer cannot use is ABSENT, not greyed — the same rule the feature panel
+  // already kept for a fill pattern on a line. It is also what makes the window
+  // short: a raster's contour settings and an orthophoto's halftone settings
+  // were never both relevant, they were only ever both on screen.
+  const blocks = {
+    raster: "propRaster", feature: "featStyle",
+    image: "propImage", photos: "propPhotos",
+  };
+  const showing = (kind === "feature" && !f) ? "raster" : kind;
+  for (const [k, id] of Object.entries(blocks)) {
+    const el = $(id);
+    if (el) el.hidden = k !== showing;
+  }
+  const t = $("propTitle");
+  if (!t) return;
+  if (showing === "feature" && f) {
+    t.textContent = f.name;
+    t.title = `${f.name} — ${counted(f.count, f.kind)}`;
+  } else if (showing === "image" && state.image) {
+    t.textContent = state.image.name || "Orthophoto";
+    t.title = `${state.image.name || "orthophoto"} — engraved as halftone marks`;
+  } else if (showing === "photos") {
+    t.textContent = "Photographs";
+    t.title = `${state.photos.length} photograph${state.photos.length === 1 ? "" : "s"}`;
+  } else if (L) {
+    t.textContent = L.name;
+    t.title = `${L.name} — layer ${state.active + 1} of ${state.layers.length}`
+      + `${state.active === 0 ? ", the primary (it defines the sheet)" : ""}`;
+  } else {
+    t.textContent = "Properties";
+    t.title = "";
+  }
+}
+
+
+/**
+ * One icon per kind of layer, in the sidebar's own drawing convention.
+ *
+ * ⚠️ ONE FAMILY, NOT SIX FOUND CHARACTERS. The rows used to carry a NUMBER for
+ * a raster and then ▣ ╱ ● ⌾ ◉ for everything else — a digit, three geometric
+ * shapes, an APL glyph and a fisheye, drawn by whichever font happened to have
+ * them. They differed in weight, in size and in vertical alignment, so a column
+ * of them read as noise rather than as a key. These are all 24×24, all stroked
+ * at one weight, all built from two or three marks so they survive at 12 px.
+ *
+ * ⚠️ THE RASTER'S ORDER MOVED TO THE DETAIL COLUMN. It used to be the swatch's
+ * contents, which is why rasters could not have an icon at all. The order is
+ * still load-bearing — layer 1 is the primary and defines the sheet — so it is
+ * still shown, just where a number belongs rather than where a symbol does.
+ */
+const LAYER_ICON = {
+  // nested contours — the ground itself
+  raster: '<path d="M2 17c4-7 7-10 10-10s6 3 10 10"/><path d="M7 19c2-3.5 3.5-5 5-5s3 1.5 5 5"/>',
+  // a framed picture with a horizon
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 16l5-5 4 4 3-3 6 6"/>',
+  // a camera
+  photos: '<rect x="2" y="7" width="20" height="12" rx="2"/><circle cx="12" cy="13" r="3.2"/>'
+    + '<path d="M9 7l1.4-2h3.2L15 7"/>',
+  // a closed, irregular shape — an area has an inside
+  polygon: '<path d="M4 8l7-4 9 5-2 9-10 2z"/>',
+  // a polyline — a line has no inside
+  line: '<polyline points="3 17 9 9 14 14 21 5"/>',
+  // a mark with a ring, which is what the tool actually draws for a point
+  point: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/>',
+};
+
+/** @param {keyof LAYER_ICON} kind */
+const layerIcon = (kind) =>
+  `<svg viewBox="0 0 24 24" aria-hidden="true">${LAYER_ICON[kind] || LAYER_ICON.point}</svg>`;
+
+/**
+ * EVERY LAYER, IN ONE FLAT LIST.
+ *
+ * ⚠️ ONE LIST, NOT SIX. Grouping by kind meant six headings over what is usually
+ * one or two layers each, so the panel was mostly labels for empty groups. A row
+ * says what it is; the reader does not need the tool to sort them into bins
+ * first. The list IS the set of selectable things, which is what makes "select a
+ * layer and the inspector becomes its property sheet" a rule with no exceptions.
+ *
+ * ⚠️ RASTERS COME FIRST AND STAY FIRST. Their order is load-bearing — layer 1 is
+ * the PRIMARY and defines the sheet — so they are the only rows that drag.
+ * Everything below them is drawn in an order the compiler fixes, not one a list
+ * can express, so letting those rows be reordered would be a lie the drawing
+ * then contradicts.
+ */
+function paintLayers() {
+  const host = $("layers");
+  if (!host) return;
+  host.innerHTML = "";
+  setTimeout(syncGrip, 0);           // the list changes the panel's height
+
+  const row = (o) => {
+    const el = document.createElement("div");
+    el.className = "pitem" + (o.selected ? " sel" : "") + (o.off ? " off" : "");
+    el.title = o.title;
+    el.innerHTML = (o.handle ? '<span class="drag" aria-hidden="true">⠿</span>' : "")
+      + `<span class="n" style="background:${o.colour}">${o.mark}</span>`
+      + `<span class="grow">${esc(o.name)}</span>`
+      + `<span class="val">${esc(o.detail)}</span>`;
+    el.addEventListener("click", o.onSelect);
+    if (o.onRemove) {
+      const x = document.createElement("button");
+      x.className = "link"; x.textContent = "remove"; x.style.fontSize = ".66rem";
+      x.addEventListener("click", (e) => { e.stopPropagation(); o.onRemove(); });
+      el.appendChild(x);
+    }
+    host.appendChild(el);
+    return el;
+  };
+
+  // ── elevation rasters ─────────────────────────────────────────────────────
+  state.layers.forEach((L, i) => {
+    const c = L.contours;
+    // ⚠️ THE SWATCH IS THE PASS COLOUR — the machine operation, not a legend
+    // colour chosen for the screen. See PASS_COLOURS in dxf.js.
+    // ⚠️ styleLabel(), never LINE_STYLES[...].label: a style with no entry in
+    // the table gives `undefined.label`, a throw one line before recompile().
+    const el = row({
+      selected: i === state.active && state.selKind === "raster",
+      off: !L.on, handle: true, colour: passColour(c.pass), mark: layerIcon('raster'),
+      name: L.name,
+      detail: `${i + 1} · ${i === 0 ? "primary · " : ""}${styleLabel(c.style, c.customDash)}`,
+      // ⚠️ THE FULL NAME GOES FIRST. Rows truncate with an ellipsis, and site
+      // rasters are named LAR3072_A1_plate_A1_DTM_1m — every distinguishing
+      // character is at the END, so every truncated row looks identical.
+      title: `${L.name}\n${L.dem.ncols}×${L.dem.nrows} at ${L.dem.cell} m`
+        + `${L.dem.crs ? ", " + L.dem.crs : ""}\n`
+        + `${styleLabel(c.style, c.customDash)} on ${c.pass}\n`
+        + (i === 0 ? "The primary raster defines the sheet." : "An elevation raster."),
+      onSelect: () => {
+        state.active = i; state.selKind = "raster";
+        syncLayer(); paintLayers();
+      },
+      onRemove: () => {
+        state.layers.splice(i, 1);
+        state.active = Math.max(0, Math.min(state.active, state.layers.length - 1));
+        state.dem = state.layers[0]?.dem || null;
+        // ⚠️ REMOVING THE PRIMARY RESIZES THE SHEET, so the view must refit or
+        // the drawing jumps out of frame with no explanation.
+        state.view.ready = false;
+        syncLayer(); paintLayers(); syncWindows(); recompile();
+      },
+    });
     el.draggable = true;
     el.addEventListener("dragstart", (e) => {
-      dragFrom = i;
-      el.classList.add("dragging");
-      try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(i)); } catch { /* older engines */ }
+      dragFrom = i; el.classList.add("dragging");
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(i));
+      } catch { /* older engines */ }
     });
     el.addEventListener("dragend", () => { dragFrom = -1; clearDropMarks(); paintLayers(); });
     el.addEventListener("dragover", (e) => {
       if (dragFrom < 0 || dragFrom === i) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
-      const above = e.clientY < r.top + r.height / 2;
       clearDropMarks();
-      el.classList.add(above ? "over-above" : "over-below");
+      el.classList.add(e.clientY < r.top + r.height / 2 ? "over-above" : "over-below");
     });
     el.addEventListener("dragleave", () => el.classList.remove("over-above", "over-below"));
     el.addEventListener("drop", (e) => {
       e.preventDefault();
       if (dragFrom < 0 || dragFrom === i) return;
       const r = el.getBoundingClientRect();
-      const above = e.clientY < r.top + r.height / 2;
-      moveLayer(dragFrom, above ? i : i + 1);
+      moveLayer(dragFrom, e.clientY < r.top + r.height / 2 ? i : i + 1);
     });
-    const x = document.createElement("button");
-    x.className = "link"; x.textContent = "remove"; x.style.fontSize = ".66rem";
-    x.addEventListener("click", (e) => {
-      e.stopPropagation();
-      state.layers.splice(i, 1);
-      state.active = Math.max(0, Math.min(state.active, state.layers.length - 1));
-      state.dem = state.layers[0]?.dem || null;
-      // ⚠️ REMOVING THE PRIMARY RESIZES THE SHEET, so the view must refit or the
-      // drawing jumps out of frame with no explanation.
-      state.view.ready = false;
-      syncLayer(); paintLayers(); recompile();
-    });
-    el.appendChild(x);
-    host.appendChild(el);
   });
+
+  // ── the orthophoto ────────────────────────────────────────────────────────
+  if (state.image) {
+    row({
+      selected: state.selKind === "image", colour: passColour("DLF-00_engrave"),
+      mark: layerIcon('image'), name: state.image.name || "orthophoto", detail: "halftone",
+      title: `${state.image.name || "orthophoto"}\nEngraved as halftone marks.`,
+      onSelect: () => { state.selKind = "image"; syncInspector(); paintLayers(); },
+    });
+  }
+
+  // ── the photographs, as ONE layer ─────────────────────────────────────────
+  // ⚠️ One mark shape and one size for the whole set, so a row each would read
+  // as a multi-selection of things that cannot be selected apart. `plist` still
+  // lists them individually, inside this layer's own properties.
+  if (state.photos.length) {
+    const n = state.photos.length;
+    row({
+      selected: state.selKind === "photos", colour: passColour("DLF-01_score_light"),
+      mark: layerIcon('photos'), name: "Photographs", detail: String(n),
+      title: `${n} photograph${n === 1 ? "" : "s"}, drawn with one mark and one size.`,
+      onSelect: () => { state.selKind = "photos"; syncInspector(); paintLayers(); },
+    });
+  }
+
+  // ── feature layers ────────────────────────────────────────────────────────
+
+  state.features.forEach((f, i) => {
+    row({
+      selected: i === state.activeFeature && state.selKind === "feature",
+      colour: passColour(f.style.pass), mark: layerIcon(f.kind),
+      name: f.name, detail: counted(f.count, f.kind),
+      title: `${f.name}\n${counted(f.count, f.kind)}`
+        + (f.id === state.clipFromFeature
+          ? "\nThe tile boundary — its outline is the outer cut, so it is not drawn as a layer."
+          : ""),
+      onSelect: () => {
+        state.activeFeature = i; state.selKind = "feature";
+        syncFeature(); paintLayers();
+      },
+      onRemove: () => {
+        // ⚠️ A CLIP POINTING AT A DELETED LAYER WOULD CLIP TO GEOMETRY NOBODY
+        // CAN SEE.
+        if (f.id === state.clipFromFeature) {
+          state.clipFromFeature = null; state.clip = null; state.clipOn = false;
+          $("clipOn").checked = false;
+          $("clipInfo").textContent = "The boundary layer was removed — the whole model is drawn.";
+        }
+        state.features.splice(i, 1);
+        state.activeFeature = Math.max(0, Math.min(state.activeFeature, state.features.length - 1));
+        if (!state.features.length && state.selKind === "feature") state.selKind = "raster";
+        syncFeature(); paintLayers(); refreshClipSources(); syncWindows(); recompile();
+      },
+    });
+  });
+
+  const info = $("featInfo");
+  if (info && !host.children.length) info.textContent = "Nothing loaded — drop a file anywhere.";
 }
+
+// The three painters are one now; these keep every call site working.
+function paintFeatureList() { paintLayers(); }
+function paintOtherLayers() { paintLayers(); }
 
 /** Push the active layer's settings into the Contour controls. */
 function syncLayer() {
@@ -498,18 +742,10 @@ function syncLayer() {
     sel.appendChild(o);
   });
   sel.value = String(state.active);
-  // The window's own title says which object it is a property sheet for; a
-  // panel of controls that does not name its subject is a panel you distrust.
-  const t = $("propTitle");
-  if (t) {
-    t.textContent = L ? L.name : "Properties";
-    t.title = L ? `${L.name} — layer ${state.active + 1} of ${state.layers.length}`
-      + `${state.active === 0 ? ", the primary (it defines the sheet)" : ""}` : "";
-  }
+  syncInspector();
   if (!L) return;
   const c = L.contours;
   $("cOn").checked = c.enabled;
-  $("cAuto").checked = c.auto;
   $("cInt").value = String(c.interval || 1);
   $("cIdx").value = String(c.indexEvery);
   $("lOn").checked = c.labels;
@@ -545,14 +781,6 @@ function syncLayer() {
   $("kIndexOnly").checked = k.indexOnly;
   $("kMinSlope").value = String(k.minSlope);
   $("kPass").value = k.pass;
-  // ── contour modulation ──
-  const md = c.modulateCfg || (c.modulateCfg = defaultModulate());
-  fillSourcePicker("dSource", L, md);
-  $("dOn").checked = md.enabled;
-  $("dPeriod").value = String(md.period);
-  $("dMinInk").value = String(md.minInk);
-  $("dMaxInk").value = String(md.maxInk);
-  $("dInvert").checked = md.invert;
   // ── the second material ──
   const m = L.mat || (L.mat = defaultMat());
   const src = $("mSource");
@@ -802,33 +1030,6 @@ function buildSymbols() {
   return out;
 }
 
-/**
- * Turn every layer's modulation SETTINGS into an actual raster for the compiler.
- *
- * ⚠️ THE COMPILER NEVER REACHES BACK INTO THE PAGE. It takes rasters, not
- * references to layers, so the reference has to be resolved on this side — and
- * for EVERY layer, not only the one whose controls are on screen. Resolving
- * just the active one leaves a background layer holding a raster that may
- * since have been removed or reordered, and it would go on drawing from it.
- */
-function resolveModulation() {
-  const note = $("dNote");
-  if (note) note.textContent = "";
-  for (const L of state.layers) {
-    const c = L.contours;
-    const md = c.modulateCfg;
-    c.modulate = null;
-    if (!md || !md.enabled) continue;
-    try {
-      const r = resolveSource(L, md.source);
-      c.modulate = { dem: r.dem, name: r.label, period: md.period,
-        minInk: md.minInk, maxInk: md.maxInk, invert: md.invert };
-      noteSource(md.source, note, L === activeLayer(), r.ms);
-    } catch (e) {
-      if (note && L === activeLayer()) note.textContent = e.message;
-    }
-  }
-}
 
 /** The hatch specs — the value as line density, one per layer that asked. */
 function buildHatches() {
@@ -895,16 +1096,7 @@ function gather() {
   const L = activeLayer();
   const c = L ? L.contours : s.contours;
   c.enabled = $("cOn").checked;
-  c.auto = $("cAuto").checked;
-  $("cInt").disabled = c.auto;
-  if (c.auto && L) {
-    const st = stats(L.dem);
-    const iv = niceInterval(st.relief, 14);
-    $("cInt").value = String(iv);
-    c.interval = iv;
-  } else {
-    c.interval = +$("cInt").value || 1;
-  }
+  c.interval = +$("cInt").value || 1;
   c.indexEvery = +$("cIdx").value;
   c.labels = $("lOn").checked;
   c.labelEvery = +$("lEvery").value;
@@ -931,14 +1123,6 @@ function gather() {
   k.indexOnly = $("kIndexOnly").checked;
   k.minSlope = Math.max(0, +$("kMinSlope").value || 0);
   k.pass = $("kPass").value;
-  const md = c.modulateCfg || (c.modulateCfg = defaultModulate());
-  md.enabled = $("dOn").checked;
-  md.source = $("dSource").value;
-  md.period = Math.min(30, Math.max(0.5, +$("dPeriod").value || 2));
-  md.minInk = Math.min(100, Math.max(0, +$("dMinInk").value || 0));
-  md.maxInk = Math.min(100, Math.max(md.minInk, +$("dMaxInk").value || 100));
-  md.invert = $("dInvert").checked;
-  resolveModulation();
   s.contours = c;
   if (L) {
     const m = L.mat || (L.mat = defaultMat());
@@ -1078,6 +1262,15 @@ function recompile() {
     badges();
     paintLayers();
     syncGrip();
+    // ⚠️ IN THE RECOMPILE CYCLE, NOT ON THE LOADERS. Rasters arrive by four
+    // routes — the strip, the window-wide drop, the demo builder and a reorder —
+    // and hooking each one is how the inspector ends up staying hidden after
+    // exactly one of them. Everything that changes what is loaded recompiles.
+    syncWindows();
+    paintOtherLayers();
+    // The sheet's size decides the image's size, and the sheet changes with the
+    // scale, the margin and which raster is primary.
+    rasterNote();
   });
 }
 for (const el of document.querySelectorAll("input,select")) {
@@ -1465,6 +1658,10 @@ function wireDrop(zone, input, handler) {
     e.preventDefault(); z.classList.remove("dragover");
     handler([...e.dataTransfer.files]);
   });
+  // ⚠️ HANDED BACK SO THE WINDOW-WIDE DROP CAN CALL THE SAME FUNCTION. A second
+  // copy of "what to do with a GeoTIFF" is a second thing to remember when a
+  // loader changes — the same argument as compileInput(), one rung down.
+  return handler;
 }
 /**
  * A new raster becomes a LAYER, appended.
@@ -1533,12 +1730,6 @@ function defaultHachures() {
     pass: "DLF-01_score_light" };
 }
 
-/** The contour-modulation template — a second quantity carried by the dash. */
-function defaultModulate() {
-  return { enabled: false, source: "slope", period: 2,
-    minInk: 5, maxInk: 100, invert: false };
-}
-
 function defaultSect() {
   return { enabled: false, count: 3, axis: "horizontal", heightMM: 12,
     datum: "own", labels: true,
@@ -1548,8 +1739,15 @@ function defaultSect() {
 function addLayer(dem, name) {
   const k = state.layers.length;
   const c = JSON.parse(JSON.stringify(DEFAULTS.contours));
-  c.auto = true;
-  c.interval = 0;
+  // ⚠️ SEEDED ONCE, THEN NEVER TOUCHED AGAIN. The "interval from the relief"
+  // checkbox is gone, but the arithmetic that made it worth having is not: one
+  // fixed interval cannot serve a 4 m fill patch and a 900 m hillside. At 1 m
+  // the patch gives four lines and the hillside gives NINE HUNDRED levels,
+  // which `contourLevels` refuses outright above 2,000 — an empty drawing with
+  // no obvious cause. So a new raster arrives on a 1-2-5 interval that lands
+  // about fourteen lines, and from then on the number in the box is the only
+  // thing that decides: typed over, never overwritten.
+  c.interval = niceInterval(stats(dem).relief, 14);
   c.style = NEXT_STYLE[k % NEXT_STYLE.length];
   c.indexStyle = c.style;
   c.pass = NEXT_PASS[k % NEXT_PASS.length];
@@ -1557,11 +1755,12 @@ function addLayer(dem, name) {
   if (k > 0) c.labels = false;      // one set of numbers on a sheet, not three
   state.layers.push({ id: state.nextId++, dem, name, on: true, contours: c, mat: defaultMat() });
   state.active = state.layers.length - 1;
+  state.selKind = "raster";
   if (k === 0) { state.dem = dem; state.view.ready = false; }
   return state.layers[state.active];
 }
 
-wireDrop("dropDEM", "fileDEM", async (files) => {
+const addRasters = wireDrop("dropDEM", "fileDEM", async (files) => {
   if (!files.length) return;
   // ⚠️ A BATCH LOADS IN NAME ORDER, NOT SELECTION ORDER. The first raster of an
   // empty list becomes the PRIMARY and defines the sheet, and a FileList's
@@ -1608,6 +1807,9 @@ wireDrop("dropDEM", "fileDEM", async (files) => {
 // another on the plate. The controls edit the SELECTED layer and the list says
 // which that is, the same grammar the raster list already uses.
 const FEATURE_KIND_LABEL = { point: "points", line: "lines", polygon: "areas" };
+const FEATURE_KIND_ONE = { point: "point", line: "line", polygon: "area" };
+/** "1 area", "3 areas" — a count and its noun agree, or the tool looks careless. */
+const counted = (n, kind) => `${n} ${n === 1 ? FEATURE_KIND_ONE[kind] : FEATURE_KIND_LABEL[kind]}`;
 
 /** Fill the pattern pickers once, grouped exactly as the Slicer groups them. */
 function fillSymbolPicker() {
@@ -1700,40 +1902,13 @@ function suggestRange(f, field, loId, hiId) {
   if (r.n) { $(loId).value = String(+r.lo.toFixed(3)); $(hiId).value = String(+r.hi.toFixed(3)); }
 }
 
-function paintFeatureList() {
-  setTimeout(syncGrip, 0);
-  // ⚠️ ONE LIST PER GEOMETRY, under its own heading, the way DL-TerrainSlicer
-  // does it. A single mixed list makes you read the kind off every row; three
-  // lists put a polygon layer where a polygon layer belongs, and the drop strip
-  // beneath each one says which geometry it takes. Marc asked where to drop a
-  // shapefile three times in one session — this is the answer to that.
-  for (const kind of ["polygon", "line", "point"]) {
-    const host = $("featList" + kind[0].toUpperCase() + kind.slice(1));
-    if (!host) continue;
-    host.innerHTML = "";
-    state.features.forEach((f, i) => {
-      if (f.kind !== kind) return;
-      const el = document.createElement("div");
-      el.className = "pitem" + (i === state.activeFeature ? " sel" : "");
-      el.title = `${f.name} — ${f.count} ${FEATURE_KIND_LABEL[f.kind]}`;
-      el.innerHTML = `<span class="n" style="background:${passColour(f.style.pass)}">${i + 1}</span>
-        <span class="grow">${esc(f.name)}</span>
-        <span class="val">${f.count}</span>`;
-      el.addEventListener("click", () => {
-        state.activeFeature = i;
-        syncFeature(); paintFeatureList();
-      });
-      host.appendChild(el);
-    });
-  }
-}
 
 /** Push the selected feature layer's style into the controls. */
 function syncFeature() {
   const f = activeFeature();
   const box = $("featStyle");
   if (!box) return;
-  box.hidden = !f;
+  syncInspector();
   if (!f) { paintSwatches(); return; }
   const st = f.style;
   // ⚠️ THE CONTROLS A GEOMETRY CANNOT USE ARE HIDDEN, NOT DISABLED. A greyed
@@ -1829,11 +2004,75 @@ function gatherFeature() {
 
 /** The feature specs the compiler takes. Geometry stays in MAP units here. */
 function buildFeatures() {
-  return state.features.map((f) => ({
-    kind: f.kind, name: f.name, rings: f.rings, points: f.points,
-    rows: f.rows, style: f.style,
-  }));
+  // ⚠️ THE LAYER SERVING AS THE TILE BOUNDARY IS NOT ALSO DRAWN. Its outline
+  // becomes the outer cut in the clip stage, so drawing it as a feature too
+  // would put two coincident lines on the plate — and if its own style is on a
+  // cut pass, that is the head cutting the same line twice.
+  return state.features
+    .filter((f) => f.id !== state.clipFromFeature)
+    .map((f) => ({
+      kind: f.kind, name: f.name, rings: f.rings, points: f.points,
+      rows: f.rows, style: f.style,
+    }));
 }
+
+/**
+ * Offer every imported polygon layer as a possible tile boundary.
+ *
+ * ⚠️ REBUILT WHENEVER THE LIST CHANGES, and the current choice is preserved by
+ * ID rather than by index — layers can be removed from the middle, and an index
+ * would silently re-point the clip at a different polygon.
+ */
+function refreshClipSources() {
+  const sel = $("clipFrom");
+  if (!sel) return;
+  const current = state.clipFromFeature;
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = ""; none.textContent = "— none, the whole model is drawn —";
+  sel.appendChild(none);
+  for (const f of state.features) {
+    if (f.kind !== "polygon") continue;
+    const o = document.createElement("option");
+    o.value = String(f.id);
+    o.textContent = `${f.name} — ${counted(f.count, f.kind)}`;
+    sel.appendChild(o);
+  }
+  if (state.clip && !state.clipFromFeature) {
+    const o = document.createElement("option");
+    o.value = "dropped"; o.textContent = `${state.clip.name} (dropped here)`;
+    sel.appendChild(o);
+    sel.value = "dropped";
+  } else {
+    sel.value = current == null ? "" : String(current);
+    if (sel.value !== (current == null ? "" : String(current))) sel.value = "";
+  }
+}
+
+$("clipFrom").addEventListener("change", () => {
+  const v = $("clipFrom").value;
+  if (v === "" ) {
+    state.clipFromFeature = null; state.clip = null; state.clipOn = false;
+    $("clipOn").checked = false;
+    $("clipInfo").textContent = "No boundary loaded — the whole model is drawn.";
+  } else if (v !== "dropped") {
+    const f = state.features.find((q) => String(q.id) === v);
+    if (f) {
+      state.clipFromFeature = f.id;
+      // ⚠️ THE RINGS ARE SHARED, NOT COPIED, and nothing downstream writes to
+      // them — the clip reads rings and the feature drawer reads rings. A copy
+      // here would double the memory of every boundary for no property gained.
+      state.clip = { rings: f.rings, name: f.name };
+      state.clipOn = true;
+      $("clipOn").checked = true;
+      $("clipInfo").innerHTML = `<b>${esc(f.name)}</b> — ${counted(f.count, f.kind)}, `
+        + `${f.rings.length} ring${f.rings.length === 1 ? "" : "s"}. Its outline becomes the `
+        + `<b>outer cut</b>, and it is no longer drawn as a feature layer.`;
+    }
+  }
+  state.view.ready = false;
+  recompile();
+});
 
 /**
  * Load shapefiles into a feature layer list.
@@ -1844,8 +2083,10 @@ function buildFeatures() {
  * heading, and told so. Refusing it would be pedantry: the tool can see what the
  * geometry is, so it should use that rather than make the reader try again.
  * @param {string} expected the kind the strip advertises
+ * @param {{reveal?:boolean}} [opts] `reveal` when the drop came from a panel
+ *   OTHER than the one holding the lists, so the result has to be shown
  */
-async function loadFeatureFiles(files, expected) {
+async function loadFeatureFiles(files, expected, opts = {}) {
   const info = $("featInfo");
   const added = [], notes = [];
   // ⚠️ THE .dbf IS PAIRED BY BASENAME, and it is where every attribute lives.
@@ -1863,10 +2104,56 @@ async function loadFeatureFiles(files, expected) {
     a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
   for (const stem of stems) {
     const pair = byStem.get(stem);
+
+    // ⚠️ GML ARRIVES AS ONE FILE AND CAN BECOME SEVERAL LAYERS. It carries its
+    // own CRS and its own attributes, so nothing has to be dropped beside it —
+    // and unlike a shapefile it may hold points, lines and areas together, which
+    // become separate layers here because a fill pattern means nothing on a
+    // point and a radius means nothing on an area.
+    const gmlFile = pair.gml || pair.xml;
+    if (gmlFile && !pair.shp) {
+      try {
+        const g = readGML(await gmlFile.text(), { name: gmlFile.name });
+        for (const n of g.notes) notes.push(`${gmlFile.name}: ${n}`);
+        if (!g.layers.length) {
+          notes.push(`${gmlFile.name}: no geometry this reader could follow — `
+            + `${g.features} feature${g.features === 1 ? "" : "s"} were looked at.`);
+          continue;
+        }
+        // Same CRS check the .prj gets: named, never used to move anything.
+        if (g.crs && state.dem?.crs && g.crs !== state.dem.crs) {
+          notes.push(`${gmlFile.name} declares ${g.crs}, but the raster is ${state.dem.crs}. `
+            + `Reproject it in QGIS — nothing here is moved for you.`);
+        }
+        for (const L of g.layers) {
+          const style = JSON.parse(JSON.stringify(FEATURE_DEFAULTS[L.kind]));
+          style.pass = NEXT_PASS[state.features.length % NEXT_PASS.length];
+          const label = g.layers.length > 1
+            ? `${gmlFile.name.replace(/\.[^.]+$/, "")} (${FEATURE_KIND_LABEL[L.kind]})`
+            : gmlFile.name.replace(/\.[^.]+$/, "");
+          state.features.push({
+            id: state.nextId++, name: label, kind: L.kind,
+            rings: L.rings, points: L.points, rows: L.rows,
+            numericFields: L.numeric, fieldNames: L.fields,
+            count: L.count, style,
+          });
+          added.push(state.features[state.features.length - 1]);
+          if (!L.rows) {
+            notes.push(`${label}: no attributes were paired, so there is nothing to style by.`);
+          }
+        }
+        if (expected && g.layers.length === 1 && g.layers[0].kind !== expected) {
+          notes.push(`${gmlFile.name} holds ${FEATURE_KIND_LABEL[g.layers[0].kind]}, not `
+            + `${FEATURE_KIND_LABEL[expected]} — filed where it belongs.`);
+        }
+      } catch (e) { notes.push(`${gmlFile.name}: ${e.message}`); }
+      continue;
+    }
+
     const file = pair.shp;
     if (!file) {
-      notes.push(`${stem}: no .shp among the files dropped — a shapefile is several files `
-        + `sharing a name, and only .shp holds the geometry`);
+      notes.push(`${stem}: no .shp or .gml among the files dropped — a shapefile is several `
+        + `files sharing a name, and only .shp holds the geometry`);
       continue;
     }
     try {
@@ -1889,7 +2176,28 @@ async function loadFeatureFiles(files, expected) {
         } catch (e) { notes.push(e.message); }
       } else {
         notes.push(`${file.name}: no .dbf was dropped with it, so there are no attributes to `
-          + `style by. Drop the .shp and .dbf together to size or turn symbols by a value.`);
+          + `style by. Drop the .shp and .dbf together to size or turn symbols by a value. `
+          + `(.shx is not needed — this reader walks the records in order.)`);
+      }
+      // ⚠️ THE .prj IS READ AS A LABEL, AND NOTHING IS REPROJECTED. Knowing both
+      // names turns the tool's vaguest failure — "does not overlap the raster,
+      // almost always a different CRS" — into a sentence that names the two
+      // codes and can be acted on. ⚠️ It is only ever a HINT: a .prj describes
+      // the file it came with, and a file can be mislabelled, so a mismatch is
+      // reported and never used to move anything.
+      if (pair.prj) {
+        try {
+          const pr = readPRJ(await pair.prj.text());
+          const said = pr.epsg || pr.name;
+          if (said && state.dem?.crs && pr.epsg && pr.epsg !== state.dem.crs) {
+            notes.push(`${pair.prj.name} says this layer is ${pr.epsg}`
+              + `${pr.name ? ` (${pr.name})` : ""}, but the raster is ${state.dem.crs}. `
+              + `Reproject the layer to ${state.dem.crs} in QGIS — nothing here is moved for you.`);
+          } else if (said && !state.dem?.crs) {
+            notes.push(`${pair.prj.name} says this layer is ${said}. The raster carries no `
+              + `CRS, so the two cannot be checked against each other.`);
+          }
+        } catch { /* a .prj that will not parse tells us nothing; the overlap test still runs */ }
       }
       const style = JSON.parse(JSON.stringify(FEATURE_DEFAULTS[r.kind]));
       style.pass = NEXT_PASS[state.features.length % NEXT_PASS.length];
@@ -1908,9 +2216,14 @@ async function loadFeatureFiles(files, expected) {
       for (const n of r.notes) notes.push(`${file.name}: ${n}`);
     } catch (e) { notes.push(`${file.name}: ${e.message}`); }
   }
-  if (added.length) state.activeFeature = state.features.indexOf(added[added.length - 1]);
-  const parts = added.map((f) => `<b>${esc(f.name)}</b> — ${f.count} `
-    + `${FEATURE_KIND_LABEL[f.kind]}.`);
+  // ⚠️ WHAT YOU JUST LOADED IS WHAT THE INSPECTOR SHOWS. Loading a layer and
+  // then having to find it to style it is the round trip this whole rearrangement
+  // exists to remove.
+  if (added.length) {
+    state.activeFeature = state.features.indexOf(added[added.length - 1]);
+    state.selKind = "feature";
+  }
+  const parts = added.map((f) => `<b>${esc(f.name)}</b> — ${counted(f.count, f.kind)}.`);
   // ⚠️ A CRS MISMATCH IS THE FAILURE THAT LOOKS LIKE A BROKEN TOOL.
   if (state.dem && added.length) {
     const d = state.dem;
@@ -1933,19 +2246,43 @@ async function loadFeatureFiles(files, expected) {
   }
   for (const m of notes) parts.push(`<span style="color:#a8541c">${esc(m)}</span>`);
   info.innerHTML = parts.join("<br>") || "None loaded.";
-  syncFeature(); paintFeatureList(); recompile();
+  // ⚠️ BOTH REPORTS SAY THE SAME THING. A warning — a missing .dbf, a CRS that
+  // does not overlap — is the whole reason to read the line, and it must not be
+  // legible only in the panel the reader is not looking at.
+  const impInfo = $("impFeatInfo");
+  if (impInfo) impInfo.innerHTML = info.innerHTML;
+  syncFeature(); paintFeatureList(); refreshClipSources(); syncWindows(); recompile();
+  if (opts.reveal && added.length) {
+    const k = added[added.length - 1].kind;
+    openTo("featList" + k[0].toUpperCase() + k.slice(1));
+  }
 }
 
 for (const kind of ["polygon", "line", "point"]) {
   const cap = kind[0].toUpperCase() + kind.slice(1);
-  wireDrop("dropFeat" + cap, "fileFeat" + cap, (files) => loadFeatureFiles(files, kind));
+  // ⚠️ ONE STRIP PER GEOMETRY, IN IMPORT, AND NOWHERE ELSE. There used to be a
+  // second set beside each list in Layers — two ways to do one thing, in two
+  // sections, which is the confusion the Layers rearrangement exists to end.
+  // Import loads, Layers lists what is loaded, the inspector changes it.
+  wireDrop("dropImpFeat" + cap, "fileImpFeat" + cap,
+    (files) => loadFeatureFiles(files, kind, { reveal: true }));
 }
 
 $("ftRemove").addEventListener("click", () => {
-  if (!activeFeature()) return;
+  const gone = activeFeature();
+  if (!gone) return;
+  // ⚠️ A CLIP POINTING AT A DELETED LAYER WOULD CLIP TO GEOMETRY NOBODY CAN SEE.
+  if (gone.id === state.clipFromFeature) {
+    state.clipFromFeature = null; state.clip = null; state.clipOn = false;
+    $("clipOn").checked = false;
+    $("clipInfo").textContent = "The boundary layer was removed — the whole model is drawn.";
+  }
   state.features.splice(state.activeFeature, 1);
   state.activeFeature = Math.max(0, Math.min(state.activeFeature, state.features.length - 1));
-  syncFeature(); paintFeatureList(); recompile();
+  // ⚠️ WITH NO FEATURE LEFT THERE IS NOTHING FOR THE INSPECTOR TO SHOW, so it
+  // falls back to the raster rather than sitting empty over a loaded drawing.
+  if (!state.features.length) state.selKind = "raster";
+  syncFeature(); paintFeatureList(); refreshClipSources(); syncWindows(); recompile();
 });
 for (const id of ["ftPass", "ftPattern", "ftSpacing", "ftRotation", "ftOutline",
   "ftRadius", "ftPointFill", "ftPointSpacing", "ftLinetype", "ftScale",
@@ -1998,7 +2335,9 @@ wireDrop("dropClip", "fileClip", async (files) => {
     }
     state.clip = { rings: r.rings, name: shp.name.replace(/\.[^.]+$/, "") };
     state.clipOn = true;
+    state.clipFromFeature = null;          // a dropped boundary is not a drawn layer
     $("clipOn").checked = true;
+    refreshClipSources();
     const holes = r.rings.filter((q) => q.hole).length;
     const parts = [`<b>${esc(state.clip.name)}</b> — ${r.shapes} ${esc(r.type)} shape`
       + `${r.shapes === 1 ? "" : "s"}, ${r.rings.length} ring${r.rings.length === 1 ? "" : "s"}`
@@ -2021,7 +2360,9 @@ wireDrop("dropClip", "fileClip", async (files) => {
     }
     info.innerHTML = parts.join("<br>");
   } catch (e) {
-    state.clip = null; state.clipOn = false; $("clipOn").checked = false;
+    state.clip = null; state.clipOn = false; state.clipFromFeature = null;
+    $("clipOn").checked = false;
+    refreshClipSources();
     info.innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
   }
   recompile();
@@ -2031,15 +2372,37 @@ wireDrop("dropClip", "fileClip", async (files) => {
 // that happens to a drawing — but "load a file" is something a reader looks for
 // in Import, and Export is closed by default. Marc asked where it was, which is
 // the whole argument for this button existing.
-$("gotoClip").addEventListener("click", () => {
-  const dz = $("dropClip");
-  const det = dz.closest("details");
-  if (det) det.open = true;
-  dz.scrollIntoView({ block: "center" });
+/**
+ * Open a control, and EVERY fold above it, then land the eye on it.
+ *
+ * ⚠️ `closest("details")` WAS NOT ENOUGH, and the button built on it did
+ * nothing at all. The drop strips sit inside a `details.sub` inside a
+ * `details.panel`; `closest` returns the SUB-fold, which is already open, so
+ * `open = true` was a no-op and the panel stayed shut. Measured: clicking "Go
+ * to the tile boundary in Export" left Export=false and scrolled to an element
+ * 1,139 px outside the menu. Every ancestor has to be opened, not the first.
+ *
+ * @param {string} id the element to reveal
+ */
+function openTo(id) {
+  const el = $(id);
+  if (!el) return;
+  for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+    if (n.tagName === "DETAILS") n.open = true;
+  }
+  el.scrollIntoView({ block: "center" });
   // A brief mark, so the eye lands on the right thing in a long panel. Uses the
   // existing dragover style rather than inventing a second highlight.
-  dz.classList.add("dragover");
-  setTimeout(() => dz.classList.remove("dragover"), 1200);
+  el.classList.add("dragover");
+  setTimeout(() => el.classList.remove("dragover"), 1200);
+}
+
+$("gotoClip").addEventListener("click", () => openTo("dropClip"));
+$("gotoFeatures").addEventListener("click", () => {
+  // The polygon strip is the top of the three lists, so opening there shows all
+  // of them; if a layer is already selected its own list is the better landing.
+  const f = activeFeature();
+  openTo(f ? "featList" + f.kind[0].toUpperCase() + f.kind.slice(1) : "featListPolygon");
 });
 $("clipOn").addEventListener("change", () => {
   state.clipOn = $("clipOn").checked && !!state.clip;
@@ -2051,14 +2414,15 @@ $("clipOn").addEventListener("change", () => {
   recompile();
 });
 $("clipClear").addEventListener("click", () => {
-  state.clip = null; state.clipOn = false;
+  state.clip = null; state.clipOn = false; state.clipFromFeature = null;
+  refreshClipSources();
   $("clipOn").checked = false;
   $("clipInfo").textContent = "No boundary loaded — the whole model is drawn.";
   state.view.ready = false;
   recompile();
 });
 
-wireDrop("dropPhotos", "filePhotos", async (files) => {
+const addPhotos = wireDrop("dropPhotos", "filePhotos", async (files) => {
   if (!files.length || !state.dem) {
     $("photoInfo").textContent = state.dem ? "No files." : "Load the raster first — it decides the grid.";
     return;
@@ -2068,6 +2432,7 @@ wireDrop("dropPhotos", "filePhotos", async (files) => {
   const { located, unlocated } = readPhotoSet(bufs);
   const placed = placePhotos(located, state.dem);
   state.photos = placed.points;
+  if (state.photos.length) state.selKind = "photos";
   state.unlocated = unlocated;
   for (const f of files) {
     if (state.thumbs.has(f.name)) URL.revokeObjectURL(state.thumbs.get(f.name));
@@ -2079,7 +2444,7 @@ wireDrop("dropPhotos", "filePhotos", async (files) => {
   paintList();
   recompile();
 });
-wireDrop("dropImage", "fileImage", async (files) => {
+const addOrthophoto = wireDrop("dropImage", "fileImage", async (files) => {
   const f = files[0];
   if (!f || !state.dem) { $("imageInfo").textContent = "Load the raster first."; return; }
   try {
@@ -2105,6 +2470,7 @@ wireDrop("dropImage", "fileImage", async (files) => {
         originX: state.dem.originX, originY: state.dem.originY };
     }
     state.image = { ...img, licence: $("licence").value };
+    state.selKind = "image";
     $("hOn").checked = true;
     $("imageInfo").innerHTML = `<b>${esc(f.name)}</b> — ${img.width}×${img.height}
       at ${(+img.cell.toFixed(3))} m/px.
@@ -2117,33 +2483,6 @@ $("licence").addEventListener("change", () => {
   recompile();
 });
 
-// ── a QGIS style, translated ────────────────────────────────────────────────
-// ⚠️ THE DECISION LOG IS SHOWN, NOT SWALLOWED. A foreign style cannot map
-// cleanly onto laser passes — see the head of qgis.js — so the user is told what
-// was carried across, what was approximated, and what was refused. An import
-// that silently "worked" is how a contour ends up on the cut pass.
-wireDrop("dropStyle", "fileStyle", async (files) => {
-  const f = files[0];
-  const log = $("qLog");
-  if (!f) return;
-  const L = activeLayer();
-  if (!L) { log.innerHTML = `<div class="note warn">Load a raster first — a style is applied to a layer.</div>`; return; }
-  try {
-    const text = await f.text();
-    const style = readQGISStyle(text);
-    const r = translateToContours(style, { allowCut: $("qCut").checked });
-    Object.assign(L.contours, r.patch);
-    const bits = [`<div class="note good"><b>${esc(f.name)}</b> — ${style.format}`
-      + `${style.version ? " " + esc(style.version) : ""}, ${style.renderer}, applied to `
-      + `<b>${esc(L.name)}</b>.</div>`];
-    for (const d of r.decisions) bits.push(`<div class="note">${esc(d)}</div>`);
-    for (const w of r.warnings) bits.push(`<div class="note warn">${esc(w)}</div>`);
-    log.innerHTML = bits.join("");
-    syncLayer(); paintLayers(); recompile();
-  } catch (e) {
-    log.innerHTML = `<div class="note warn">${esc(f.name)}: ${esc(e.message)}</div>`;
-  }
-});
 
 function replaceAll() {
   state.photos = []; state.unlocated = []; state.selected = -1;
@@ -2164,7 +2503,7 @@ $("sFit").addEventListener("click", () => {
     recompile();
   } else {
     // Saying nothing here would look like the button was broken.
-    $("expInfo").textContent = "";
+    $("expResult").textContent = "";
     $("sTitle").placeholder = `nothing on the ladder fits ${w} × ${h} mm — try a larger bed`;
   }
 });
@@ -2228,12 +2567,12 @@ $("expDXF").addEventListener("click", () => {
       save(`${stem()}${suffix}.dxf`, toDXF(d, { sheet: sh }).toString(), "application/dxf");
     }
     if (sheets.length > 1) {
-      $("expInfo").innerHTML = `<b>${sheets.length} sheets of material</b> — one DXF each: `
+      $("expResult").innerHTML = `<b>${sheets.length} sheets of material</b> — one DXF each: `
         + sheets.map((sh) => esc(`${stem()}-${sh}.dxf`)).join(", ")
         + `. Pin the registration holes before gluing.`;
     }
   } catch (e) {
-    $("expInfo").innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
+    $("expResult").innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
   }
 });
 // ⚠️ THE TEST SHEET IS NOT COMPILED FROM A RASTER, so it bypasses `compile` and
@@ -2255,7 +2594,283 @@ $("expSVG").addEventListener("click", () => {
         "image/svg+xml");
     }
   } catch (e) {
-    $("expInfo").innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
+    $("expResult").innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
+  }
+});
+
+/** Describe the image the current settings would make, before making it. */
+function rasterNote() {
+  const el = $("rasSize");
+  const btns = [$("expPNG"), $("expJPG")];
+  if (!el) return null;
+  // ⚠️ A BUTTON THAT CANNOT WORK MUST NOT LOOK LIKE IT CAN. Marc clicked Save
+  // with an oversized sheet and nothing happened: the refusal was printed above
+  // the button while the result line is below it, so the one place he was
+  // looking said nothing at all. A dead control that still invites a click is
+  // worse than an absent one.
+  if (!state.drawing) {
+    el.textContent = "Load a raster first.";
+    for (const b of btns) if (b) b.disabled = true;
+    return null;
+  }
+  const plan = rasterPlan(state.drawing.sheet, {
+    dpi: +$("rasDPI").value, strokeMM: +$("rasStroke").value || 0.25,
+  });
+  const px = `${plan.wPx} × ${plan.hPx} px`;
+  const mm = `${Math.round(state.drawing.sheet.width)} × ${Math.round(state.drawing.sheet.height)} mm`;
+  el.innerHTML = plan.ok
+    ? `<b>${px}</b> — ${mm} at ${plan.dpi} dpi, ${plan.megapixels.toFixed(1)} Mpx.`
+      + (plan.widened
+        ? `<br><span style="color:#a8541c">Lines widened to ${plan.strokeMM.toFixed(3)} mm: `
+          + `below that they are under 1.5 px at this resolution and would engrave faint.</span>`
+        : "")
+    : `<span style="color:#a8541c">${esc(plan.refusal)}</span>`;
+  for (const b of btns) if (b) b.disabled = !plan.ok;
+  return plan;
+}
+for (const id of ["rasDPI", "rasStroke"]) {
+  const el = $(id);
+  if (el) el.addEventListener("input", rasterNote);
+}
+
+/**
+ * Encode a canvas, and report failure instead of swallowing it.
+ *
+ * ⚠️ `toBlob` IS ASYNCHRONOUS AND CAN HAND BACK NULL. On a large canvas a
+ * browser may simply decline to encode — no throw, no message, just null. The
+ * first version of this called `if (b) save(...)` inside the callback and wrote
+ * its "saved" line immediately afterwards, so a failed encode produced a
+ * success message and no file. That is the worst shape a bug can take: the tool
+ * says it did something it did not do.
+ *
+ * @param {HTMLCanvasElement} cv @param {string} mime @param {number} quality
+ * @returns {Promise<Blob|null>}
+ */
+function encodeCanvas(cv, mime, quality) {
+  return new Promise((resolve) => {
+    try { cv.toBlob((b) => resolve(b), mime, quality); }
+    catch { resolve(null); }
+  });
+}
+
+/**
+ * Write the drawing as one engraved image, plus the cut lines beside it.
+ * @param {"png"|"jpeg"} fmt
+ */
+async function saveEngraving(fmt) {
+  if (!state.dem) return;
+  const out = $("expResult");
+  try {
+    // ⚠️ THE SAME INPUT AS THE PREVIEW. A fourth way out of the tool is a fourth
+    // chance to draw something else; it gets the same builder as the other three.
+    const d = compile(compileInput(true));
+    const plan = rasterPlan(d.sheet, {
+      dpi: +$("rasDPI").value, strokeMM: +$("rasStroke").value || 0.25,
+    });
+    if (!plan.ok) {
+      out.innerHTML = `<span style="color:#a8541c">${esc(plan.refusal)}</span>`;
+      return;
+    }
+    // ⚠️ JPEG HAS NO ALPHA. Asking for a transparent JPEG silently gives a black
+    // background in some encoders and white in others, so the request is refused
+    // here rather than guessed at.
+    const transparent = fmt === "png" && $("rasAlpha").checked;
+    const mime = fmt === "jpeg" ? "image/jpeg" : "image/png";
+    const ext = fmt === "jpeg" ? "jpg" : "png";
+
+    out.innerHTML = `Drawing ${plan.wPx} × ${plan.hPx} px…`;
+    const sheets = sheetsIn(d);
+    const written = [];
+    const failed = [];
+    const notes = [];
+
+    for (const sh of sheets) {
+      const only = sheets.length > 1 ? sh : undefined;
+      const suffix = sheets.length > 1 ? `-${sh}` : "";
+      const cv2 = document.createElement("canvas");
+      cv2.width = plan.wPx; cv2.height = plan.hPx;
+      const c2 = cv2.getContext("2d");
+      if (!c2) throw new Error("this browser would not give a 2D canvas to draw the image on");
+      paintEngraving(c2, d, plan, { sheet: only, transparent });
+
+      const imgName = `${stem()}${suffix}-engrave-${plan.dpi}dpi.${ext}`;
+      // ⚠️ JPEG AT FULL QUALITY, and it is still the wrong file to engrave from:
+      // its ringing lands around every line, and here a grey pixel is a power
+      // setting, so the artefact is a wobble in the burn rather than a soft edge.
+      const blob = await encodeCanvas(cv2, mime, 0.95);
+      if (blob) { save(imgName, blob, mime); written.push(imgName); }
+      else failed.push(imgName);
+
+      // ⚠️ THE CUT LINES GO OUT AS VECTORS BESIDE IT, ON THE SAME SHEET. The
+      // image cannot cut; this is the file that does, and because it is the same
+      // Drawing on the same sheet the two align on the bed without moving the
+      // material.
+      if ($("rasCut").checked) {
+        const cut = cutLinesOnly(d, { sheet: only });
+        if (cut.paths.length || cut.circles.length) {
+          const cutName = `${stem()}${suffix}-cut.svg`;
+          save(cutName, toSVG(cut, { title: `${stem()}${suffix} — cut lines`, sheet: only }),
+            "image/svg+xml");
+          written.push(cutName);
+        } else {
+          notes.push("no cut passes in this drawing, so no cut SVG was written — everything "
+            + "here engraves");
+        }
+      }
+    }
+
+    if (failed.length) {
+      notes.push(`the browser would not encode ${failed.join(", ")} at ${plan.wPx} × `
+        + `${plan.hPx} px — it declined without an error, which it does when an image is too `
+        + `large to hold twice over. A lower resolution will go through.`);
+    }
+    out.innerHTML = (written.length
+      ? `<b>${esc(written.join(", "))}</b><br>${plan.wPx} × ${plan.hPx} px at ${plan.dpi} dpi`
+        + (sheets.length > 1 ? `, one set per material sheet` : "") + `.`
+        + `<br><span style="color:#a8541c">The image cuts nothing — the outer cut is a dark `
+        + `line in it. Cut from the SVG.</span>`
+      : `<span style="color:#a8541c">Nothing was written.</span>`)
+      + (transparent
+        ? `<br><span style="color:#a8541c">⚠️ Transparent background: some laser software `
+          + `composites alpha onto BLACK and would engrave the whole plate. Do not send this `
+          + `one to the bed.</span>` : "")
+      + (fmt === "jpeg"
+        ? `<br><span style="color:#a8541c">JPEG is lossy — engrave from the PNG.</span>` : "")
+      + (plan.widened
+        ? `<br><span style="color:#a8541c">Lines widened to ${plan.strokeMM.toFixed(3)} mm to `
+          + `survive rasterising at ${plan.dpi} dpi.</span>` : "")
+      + notes.map((n) => `<br><span style="color:#a8541c">${esc(n)}</span>`).join("");
+  } catch (e) {
+    out.innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
+  }
+}
+
+$("expPNG").addEventListener("click", () => saveEngraving("png"));
+$("expJPG").addEventListener("click", () => saveEngraving("jpeg"));
+
+// ── the whole window is the front door ──────────────────────────────────────
+/**
+ * Route files dropped anywhere on the page to the target that wants them.
+ *
+ * ⚠️ THIS IS WHAT LETS EVERY PANEL START SHUT. The old rule was "every fold
+ * that accepts a file opens by default", and it existed because Marc asked
+ * three times in one session where to load something. Closing the panels
+ * without this would put the only way into the tool inside a fold nobody has
+ * opened, in front of a canvas that says "drop an elevation raster to begin"
+ * and then ignores the drop.
+ *
+ * ⚠️ EVERY ROUTING DECISION IS REPORTED. The tool is guessing from a file
+ * extension — a GeoTIFF is terrain far more often than it is an orthophoto, but
+ * it can be either — and a guess made silently is a guess nobody can correct.
+ * The panel it chose is opened, so the answer is on screen next to the file.
+ */
+const DROP_ROUTES = [
+  { test: /\.tiff?$/i, target: "terrain", label: "terrain raster" },
+  { test: /\.(shp|dbf|shx|cpg|prj|gml)$/i, target: "features", label: "feature layer" },
+  { test: /\.jpe?g$/i, target: "photos", label: "photograph" },
+  { test: /\.png$/i, target: "image", label: "orthophoto" },
+];
+
+/**
+ * ⚠️ `.xml` IS AMBIGUOUS AND IS DECIDED BY LOOKING INSIDE. GML, SLD and QML all
+ * ship as .xml, and routing on the extension alone would file a boundary as a
+ * line style. Reading the first few hundred characters is cheap and it is the
+ * only honest way to tell them apart.
+ */
+async function routeOfXML(file) {
+  try {
+    const head = (await file.slice(0, 2048).text()).toLowerCase();
+    if (/gml|featurecollection|featuremember/.test(head)) return "features";
+  } catch { /* unreadable head; fall through */ }
+  return null;
+}
+
+(() => {
+  const vp = document.getElementById("viewport") || document.body;
+  let depth = 0;
+  const mark = (on) => document.body.classList.toggle("dropping", on);
+
+  vp.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  vp.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    depth++; mark(true);
+  });
+  vp.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; mark(false); } });
+
+  vp.addEventListener("drop", async (e) => {
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length) return;
+    // ⚠️ A DROP ONTO A LABELLED ZONE IS THAT ZONE'S, NOT THIS HANDLER'S. The
+    // strips stop the event themselves; this only sees what fell on the ground.
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    depth = 0; mark(false);
+    // ⚠️ A DROP WHILE THE WINDOWS ARE FOLDED HAS TO BRING THEM BACK, or the
+    // file loads into chrome nobody can see and the tool looks like it ignored it.
+    foldMenu(false);
+
+    /** @type {Record<string, File[]>} */
+    const bins = {};
+    const unknown = [];
+    for (const f of files) {
+      let target = DROP_ROUTES.find((r) => r.test.test(f.name))?.target;
+      if (!target && /\.xml$/i.test(f.name)) target = await routeOfXML(f);
+      if (!target) { unknown.push(f.name); continue; }
+      (bins[target] ||= []).push(f);
+    }
+
+    const said = [];
+    if (bins.terrain) { said.push(`${bins.terrain.length} to Terrain`); await addRasters(bins.terrain); }
+    if (bins.features) {
+      said.push(`${bins.features.length} to Vector features`);
+      await loadFeatureFiles(bins.features, null, { reveal: true });
+    }
+    if (bins.photos) { said.push(`${bins.photos.length} to Photographs`); await addPhotos(bins.photos); }
+    if (bins.image) { said.push(`1 to Orthophoto`); await addOrthophoto(bins.image); }
+
+    if (unknown.length) {
+      said.push(`<span style="color:#a8541c">not recognised: ${esc(unknown.join(", "))} — this `
+        + `tool takes .tif, .shp, .gml, .jpg and .png</span>`);
+    }
+    const note = $("dropReport");
+    if (note) note.innerHTML = said.length ? `Dropped: ${said.join(" · ")}.` : "";
+  });
+})();
+
+// ⚠️ THE WAY BACK TO QGIS. The finished line work goes out on the ground, in
+// the raster's own coordinates, where it can be opened beside the data it was
+// made from and checked against it.
+$("expSHP").addEventListener("click", () => {
+  if (!state.dem) return;
+  try {
+    // ⚠️ THE SAME INPUT AS THE PREVIEW, like every other route out. This export
+    // was written after the circle grid, the hatching, the sections and the clip
+    // — exactly the four that a hand-built input silently dropped last time. See
+    // compileInput.
+    const d = compile(compileInput(true));
+    const out = drawingToShapefiles(d, { stem: stem(), crs: state.dem.crs });
+    if (!out.files.length) {
+      $("expResult").innerHTML = `<span style="color:#a8541c">Nothing to write — the drawing `
+        + `is empty.</span>`;
+      return;
+    }
+    save(`${stem()}-qgis.zip`, zipStore(out.files), "application/zip");
+    const b = out.bbox;
+    $("expResult").innerHTML = `<b>${esc(stem())}-qgis.zip</b> — ${out.lines} line`
+      + `${out.lines === 1 ? "" : "s"}`
+      + (out.points ? ` and ${out.points} point${out.points === 1 ? "" : "s"}` : "")
+      + `, ${out.files.length} files. `
+      + (out.prj ? `Georeferenced <b>${esc(out.crs)}</b> — drop the zip straight onto QGIS.`
+        : `No .prj written.`)
+      + (b ? `<br>Extent ${b[0].toFixed(1)}, ${b[1].toFixed(1)} → ${b[2].toFixed(1)}, `
+        + `${b[3].toFixed(1)}.` : "")
+      + out.notes.map((n) => `<br><span style="color:#a8541c">${esc(n)}</span>`).join("");
+  } catch (e) {
+    $("expResult").innerHTML = `<span style="color:#a8541c">${esc(e.message)}</span>`;
   }
 });
 
@@ -2268,7 +2883,7 @@ $("expTest").addEventListener("click", () => {
   save("SP500-material-test.dxf", toDXF(d).toString(), "application/dxf");
   save("SP500-material-test.svg", toSVG(d, { title: "SP500 material test" }), "image/svg+xml");
   save("SP500-material-test-procedure.txt", testSheetProcedure(d), "text/plain");
-  $("expInfo").innerHTML = `<b>Material test sheet</b> — ${d.sheet.width} × ${d.sheet.height} mm, `
+  $("expResult").innerHTML = `<b>Material test sheet</b> — ${d.sheet.width} × ${d.sheet.height} mm, `
     + `${d.report.totals.paths} paths. Three files saved: the DXF, an SVG of the same sheet, and the `
     + `procedure to keep with the coupon.` + d.warnings.map((w) => `<br><span style="color:#a8541c">${esc(w)}</span>`).join("");
 });
@@ -2298,5 +2913,7 @@ for (const body of document.querySelectorAll("#sidebar .sec-body")) foldSubsecti
 resize();
 syncLayer();
 paintLayers();
+syncWindows();
+
 gather();
 paintList();

@@ -1,5 +1,5 @@
 // @ts-check
-// A SMALL XML READER — enough for a QGIS style file and no more.
+// A SMALL XML READER — enough for the GML this tool reads and no more.
 //
 // ⚠️ WRITTEN RATHER THAN BORROWED, FOR THE SAME REASON AS THE TIFF AND EXIF
 // READERS. The browser has DOMParser; Node does not, and the whole test suite
@@ -10,9 +10,11 @@
 //
 // ⚠️ WHAT IT DELIBERATELY DOES NOT DO: namespaces beyond stripping the prefix,
 // DTD resolution, entity declarations, processing instructions, mixed content
-// with meaningful whitespace. A QML or an SLD needs none of them. If a file
-// arrives that does, this returns a tree that is missing something rather than
-// a tree that is wrong — and `readQGISStyle` reports what it could not find.
+// with meaningful whitespace. The GML this tool meets needs none of them, and
+// stripping the prefix is exactly what makes `gml:Polygon` and `ns:Polygon` the
+// same tag to a caller. If a file arrives that needs more, this returns a tree
+// that is missing something rather than a tree that is wrong — and `readGML`
+// counts and reports every feature it could not follow.
 
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 

@@ -27,7 +27,7 @@ import { stats } from "./dem.js";
 import { markGeometry, uncertaintyMM } from "./photos.js";
 import { vectorHalftone, tripleHalftone, assertExportable, CHANNELS } from "./halftone.js";
 import { symbolLegend, symbolField, signedSymbolField, strideFor, hatchCircle } from "./symbols.js";
-import { applyStyle, modulatedDash, LINE_STYLES, styleLabel } from "./linestyle.js";
+import { applyStyle, LINE_STYLES, styleLabel } from "./linestyle.js";
 import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
@@ -132,8 +132,15 @@ export function compile(input) {
   // cut from. Undefined means "surface", the base board, so nothing that
   // existed before two-material drawings has to change. The writers filter on
   // it; one Drawing, several files, one per sheet of material on the bed.
-  const add = (pts, layer, closed = false, sheet) => {
-    if (pts && pts.length >= 4) paths.push({ pts, layer, closed, sheet });
+  // ⚠️ `kind` IS THE TRANSLATION THAT MADE THIS PATH, and it exists because the
+  // pass cannot stand in for it. Two translations routinely share a pass — a
+  // contour and a section datum are both score-light — so on the way OUT to a
+  // shapefile, "which of the eight made this line?" has no answer unless it is
+  // recorded here at the moment it is drawn. Same argument as `furniture`: a
+  // tag says what a thing IS, a layer only says what the machine does to it.
+  // Undefined is honest for anything that never declared one.
+  const add = (pts, layer, closed = false, sheet, kind) => {
+    if (pts && pts.length >= 4) paths.push({ pts, layer, closed, sheet, kind });
   };
   // ⚠️ SHEET FURNITURE IS TAGGED, NOT INFERRED FROM ITS PASS. The clip stage
   // exempts furniture — a scale bar cut in half is no longer a scale bar — and
@@ -190,7 +197,7 @@ export function compile(input) {
     const put = (sy) => {
       for (const t of sy) {
         const r = sheet.L(t.r);
-        if (r > 0.05) circles.push({ cx: sheet.X(t.x), cy: sheet.Y(t.y), r, layer: OPERATIONS.halftone });
+        if (r > 0.05) circles.push({ cx: sheet.X(t.x), cy: sheet.Y(t.y), r, layer: OPERATIONS.halftone, kind: "halftone" });
       }
     };
     if (sym.halftone.mode === "triple") {
@@ -199,7 +206,7 @@ export function compile(input) {
       t.layers.forEach((L, i) => {
         for (const q of L.symbols) {
           const r = sheet.L(q.r);
-          if (r > 0.05) circles.push({ cx: sheet.X(q.x), cy: sheet.Y(q.y), r, layer: passes[i] });
+          if (r > 0.05) circles.push({ cx: sheet.X(q.x), cy: sheet.Y(q.y), r, layer: passes[i], kind: "halftone" });
         }
         if (!L.recommended) {
           warnings.push(`Halftone channel "${L.label}" is a raw sensor band — it engraves `
@@ -265,65 +272,12 @@ export function compile(input) {
       if (!picked.length) return { after: 0, before: 0, verdict: "continuous", shortest: 0 };
       const r = applyStyle(picked, style, custom);
       for (const piece of r.paths) {
-        for (const part of clipToSheet(piece, false, sheet)) add(part.pts, pass, false);
+        for (const part of clipToSheet(piece, false, sheet)) add(part.pts, pass, false, undefined, "contours");
       }
       return r;
     };
-    // ⚠️ MODULATION REPLACES THE NAMED STYLE, IT DOES NOT STACK WITH IT. Two
-    // dash patterns cut into one line leave a stutter that is neither pattern
-    // and measures nothing. When a layer modulates, the style picker's job is
-    // done by the field instead, and the report says so.
-    const mod = c.modulate;
-    const modDem = mod && mod.dem ? mod.dem : null;
-    let modReport = null;
-    if (modDem) {
-      const ms = stats(modDem);
-      const mlo = Number.isFinite(mod.lo) ? mod.lo : ms.min;
-      const mhi = Number.isFinite(mod.hi) ? mod.hi : ms.max;
-      const mspan = mhi - mlo;
-      // Sheet mm back to the modulating raster's own grid, once per mark.
-      const duty = (mx, my) => {
-        const X = dem.originX + (mx - sheet.margin) / sheet.mmPerUnit;
-        const Y = (dem.originY - dem.nrows * dem.cell) + (my - sheet.margin) / sheet.mmPerUnit;
-        const col = Math.floor((X - modDem.originX) / modDem.cell);
-        const row = Math.floor((modDem.originY - Y) / modDem.cell);
-        if (col < 0 || row < 0 || col >= modDem.ncols || row >= modDem.nrows) return NaN;
-        const v = modDem.z[row * modDem.ncols + col];
-        if (!Number.isFinite(v)) return NaN;
-        let t = mspan > 0 ? (v - mlo) / mspan : 1;
-        t = t < 0 ? 0 : t > 1 ? 1 : t;
-        return mod.invert ? 1 - t : t;
-      };
-      let marks = 0;
-      for (const l of inMM) {
-        for (const piece of modulatedDash(l.pts, l.closed, duty, {
-          period: mod.period > 0 ? mod.period : 2,
-          minInk: (mod.minInk ?? 5) / 100,
-          maxInk: (mod.maxInk ?? 100) / 100,
-        })) {
-          for (const part of clipToSheet(piece, false, sheet)) {
-            add(part.pts, l.index ? c.indexPass : c.pass);
-            marks++;
-          }
-        }
-      }
-      modReport = { name: mod.name || modDem.name || "field", marks,
-        period: mod.period > 0 ? mod.period : 2,
-        minInk: mod.minInk ?? 5, maxInk: mod.maxInk ?? 100,
-        invert: !!mod.invert, lo: +(+mlo).toFixed(2), hi: +(+mhi).toFixed(2) };
-      if (marks > 6000) {
-        warnings.push(`${layer.name || "raster"}: a modulated contour became ${marks} separate `
-          + `marks — every one is a head move. A longer period brings it down.`);
-      }
-      if (!marks) {
-        warnings.push(`${layer.name || "raster"}: the modulating field left every contour bare — `
-          + `check that it overlaps this raster and holds measured values.`);
-      }
-    }
-    const mid = modDem ? { after: 0, before: 0, verdict: "modulated", shortest: 0 }
-      : emit(false, c.style, c.pass, c.customDash);
-    const idx = modDem ? { after: 0, before: 0, verdict: "modulated", shortest: 0 }
-      : emit(true, c.indexStyle, c.indexPass, c.indexCustomDash);
+    const mid = emit(false, c.style, c.pass, c.customDash);
+    const idx = emit(true, c.indexStyle, c.indexPass, c.indexCustomDash);
 
     // ── hachures: strokes down the fall line, hung off these contours ──────
     // ⚠️ HUNG OFF THE CONTOURS THAT WERE ACTUALLY TRACED, in MAP units, before
@@ -344,7 +298,7 @@ export function compile(input) {
       let drawn = 0;
       for (const t of h.ticks) {
         const mm = Float64Array.of(sheet.X(t[0]), sheet.Y(t[1]), sheet.X(t[2]), sheet.Y(t[3]));
-        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, hc.pass || c.pass); drawn++; }
+        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, hc.pass || c.pass, false, undefined, "hachures"); drawn++; }
       }
       hachureReport = { drawn, skipped: h.skipped,
         spacingMM: hc.spacingMM ?? 3, minMM: hc.minMM ?? 0.9, maxMM: hc.maxMM ?? 2.5,
@@ -368,7 +322,7 @@ export function compile(input) {
       }
     }
     for (const st of labels) {
-      for (const part of clipToSheet(st, false, sheet)) add(part.pts, c.labelPass, false);
+      for (const part of clipToSheet(st, false, sheet)) add(part.pts, c.labelPass, false, undefined, "contour-labels");
     }
 
     const styleName = (k, custom) => styleLabel(k, custom);
@@ -378,11 +332,11 @@ export function compile(input) {
       paths: traced.length, points: traced.reduce((a, l) => a + l.pts.length / 2, 0),
       labels: placed,
       datum: datumShift ? `local, ${datumShift.toFixed(2)} m subtracted` : "absolute",
-      style: modDem ? `modulated by ${modReport.name}` : styleName(c.style, c.customDash),
-      indexStyle: modDem ? `modulated` : styleName(c.indexStyle, c.indexCustomDash),
+      style: styleName(c.style, c.customDash),
+      indexStyle: styleName(c.indexStyle, c.indexCustomDash),
       pass: c.pass, indexPass: c.indexPass,
-      modulation: modReport, hachures: hachureReport,
-      drawn: modDem ? modReport.marks : mid.after + idx.after,
+      hachures: hachureReport,
+      drawn: mid.after + idx.after,
       verdict: mid.verdict === "continuous" && idx.verdict === "continuous"
         ? "continuous" : (mid.after + idx.after > 6000 ? "very heavy" : mid.verdict),
     });
@@ -411,17 +365,17 @@ export function compile(input) {
         bearing: sym.photos.bearing && p.meta.direction !== undefined ? p.meta.direction : undefined,
         halo: halo || undefined,
       });
-      for (const q of g.paths) add(q, OPERATIONS.photoMark);
+      for (const q of g.paths) add(q, OPERATIONS.photoMark, false, undefined, "photos");
       for (const c of g.circles) {
         circles.push({ cx: c.cx, cy: c.cy, r: c.r,
-          layer: halo && Math.abs(c.r - halo) < 1e-9 ? OPERATIONS.photoHalo : OPERATIONS.photoMark });
+          layer: halo && Math.abs(c.r - halo) < 1e-9 ? OPERATIONS.photoHalo : OPERATIONS.photoMark, kind: "photos" });
       }
       if (sym.photos.numbers) {
         const off = sym.photos.size * 0.75 + sym.photos.numberSize * 0.4;
         for (const st of textStrokes(String(p.n), {
           x: cx + off, y: cy + off, size: sym.photos.numberSize,
           anchor: "start", baseline: "middle", tracking: 6,
-        })) add(st, OPERATIONS.photoNumber);
+        })) add(st, OPERATIONS.photoNumber, false, undefined, "photos");
       }
     }
     const corrected = photos.filter((p) => p.dx || p.dy).length;
@@ -474,15 +428,15 @@ export function compile(input) {
       const clipped = clipRingToRect(mm, sheetRect);
       if (!clipped) continue;
       if (mode === "overlay") {
-        add(clipped, pass, true, matSheet);
+        add(clipped, pass, true, matSheet, "regions");
         // ⚠️ THE PLACEMENT GUIDE IS A SCORE ON THE SURFACE, NOT A CUT. The same
         // outline, light, so the piece has a drawn home to be glued into. The
         // pieces are cut at the SAME coordinates they land at, so one pair of
         // registration pins lays the material sheet over the surface and every
         // piece is already above its place.
-        if (spec.guide !== false) add(clipped, OPERATIONS.contourLabel, true);
+        if (spec.guide !== false) add(clipped, OPERATIONS.contourLabel, true, undefined, "regions");
       } else {
-        add(clipped, pass, true);
+        add(clipped, pass, true, undefined, "regions");
       }
       drawn++;
     }
@@ -496,7 +450,7 @@ export function compile(input) {
           anchor: "middle", baseline: "middle", tracking: 6,
         })) {
           for (const part of clipToSheet(st, false, sheet)) {
-            add(part.pts, OPERATIONS.contourLabel, false, matSheet);
+            add(part.pts, OPERATIONS.contourLabel, false, matSheet, "regions");
           }
         }
       }
@@ -570,13 +524,13 @@ export function compile(input) {
         if (cx - r < 0 || cx + r > sheet.width || cy - r < 0 || cy + r > sheet.height) {
           dropped++; continue;
         }
-        circles.push({ cx, cy, r, layer });
+        circles.push({ cx, cy, r, layer, kind: "symbols" });
         if (style === "hatched") {
           // ⚠️ 0.3 mm minimum chord — the same runt floor the hatch field keeps,
           // and the same guess, waiting on the same coupon.
           for (const c of hatchCircle(cx, cy, r, hatchMM,
             { angleDeg: spec.hatchAngle ?? 45, minLength: 0.3 })) {
-            add(c, layer);
+            add(c, layer, false, undefined, "symbols");
             chords++;
           }
         }
@@ -618,7 +572,7 @@ export function compile(input) {
         for (const e of leg) {
           const r2 = sheet.L(e.r);
           lx += r2;
-          circles.push({ cx: lx, cy: ly, r: r2, layer: passPlus });
+          circles.push({ cx: lx, cy: ly, r: r2, layer: passPlus, kind: "symbols" });
           const v2 = Math.abs(e.v);
           for (const st of textStrokes(String(v2 >= 10 ? v2.toFixed(0) : +v2.toFixed(2)), {
             x: lx, y: ly + rMax + 2.6, size: 1.8,
@@ -705,7 +659,7 @@ export function compile(input) {
     let drawn = 0;
     for (const p of f.paths) {
       const mm = Float64Array.of(sheet.X(p[0]), sheet.Y(p[1]), sheet.X(p[2]), sheet.Y(p[3]));
-      for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass); drawn++; }
+      for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass, false, undefined, "hatch"); drawn++; }
     }
     hatchReports.push({
       name: spec.name || hd.name || "hatch",
@@ -757,7 +711,7 @@ export function compile(input) {
       // shapefile covering more ground than the plate must not send strokes
       // off the material.
       for (const part of clipToSheet(p.pts, p.closed, sheet)) {
-        add(part.pts, p.layer, part.closed === true && p.closed);
+        add(part.pts, p.layer, part.closed === true && p.closed, undefined, "features");
       }
     }
     for (const w of f.warnings) warnings.push(w);
@@ -788,14 +742,14 @@ export function compile(input) {
       // line stays a datum rather than competing with the ground.
       const ln = Float64Array.of(sheet.X(S.line[0]), sheet.Y(S.line[1]),
                                  sheet.X(S.line[2]), sheet.Y(S.line[3]));
-      for (const part of clipToSheet(ln, false, sheet)) add(part.pts, linePass);
+      for (const part of clipToSheet(ln, false, sheet)) add(part.pts, linePass, false, undefined, "sections");
       for (const p of S.profile) {
         const mm = new Float64Array(p.length);
         for (let i = 0; i < p.length; i += 2) {
           mm[i] = sheet.X(p[i]);
           mm[i + 1] = sheet.Y(p[i + 1]);
         }
-        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass); drawn++; }
+        for (const part of clipToSheet(mm, false, sheet)) { add(part.pts, pass, false, undefined, "sections"); drawn++; }
       }
       gaps += S.gaps;
       // ⚠️ THE END TICKS NAME THE CUT, A–A′, and they are the reason a section
@@ -814,7 +768,7 @@ export function compile(input) {
             anchor: which === "start" ? "start" : "end",
             baseline: "middle", tracking: 6,
           })) {
-            for (const part of clipToSheet(st, false, sheet)) add(part.pts, linePass);
+            for (const part of clipToSheet(st, false, sheet)) add(part.pts, linePass, false, undefined, "sections");
           }
         }
       }
@@ -882,7 +836,7 @@ export function compile(input) {
     for (const name of sheetNames) {
       for (const [mx, my] of marks) {
         circles.push({ cx: mx, cy: my, r: 1.25, layer: OPERATIONS.photoMark,
-          sheet: name === "surface" ? undefined : name });
+          sheet: name === "surface" ? undefined : name, kind: "registration" });
       }
     }
     warnings.push(`This drawing spans ${sheetNames.size} sheets of material. Two Ø 2.5 mm `
@@ -894,7 +848,7 @@ export function compile(input) {
     for (const name of sheetNames) {
       if (name === "surface") continue;
       add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
-        sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true, name);
+        sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true, name, "frame");
     }
   }
 
@@ -965,7 +919,7 @@ export function compile(input) {
   // the boundary exists to define.
   if (!clipRings) {
     add([0, 0, sheet.width, 0, sheet.width, sheet.height, 0, sheet.height],
-      sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true);
+      sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds, true, undefined, "frame");
   }
   const foot = [];
   // A horizontal run of ink fits when both ends and the middle are inside — a
@@ -1086,12 +1040,18 @@ export function compile(input) {
     outPaths = r.paths;
     outCircles = r.circles;
     const survived = outPaths.length + outCircles.length;
-    // The boundary itself is now the outer cut — the shape of the tile.
+    // ⚠️ THE BOUNDARY IS ALWAYS THE OUTER CUT — it is not the sheet frame and
+    // it does not follow the frame's checkbox. Those are two different things
+    // and conflating them was a real defect: with the frame off, the tile
+    // outline was written to DLF-99_sheet, the layer that is assigned to NO
+    // PASS. The plate then engraved perfectly and never came out of the sheet,
+    // and nothing on screen said why, because DLF-99 is drawn on screen like
+    // any other line. The frame's checkbox governs the RECTANGLE of the sheet;
+    // once a tile is clipped, its boundary IS the shape of the part.
     for (const ring of clipRings) {
       if (ring.hole) continue;
-      outPaths.push({ pts: ring.pts,
-        layer: sym.sheet.frame ? OPERATIONS.sheetFrame : OPERATIONS.sheetBounds,
-        closed: true });
+      outPaths.push({ pts: ring.pts, layer: OPERATIONS.sheetFrame,
+        closed: true, kind: "clip-boundary" });
     }
     clipReport = { name: input.clip.name || "boundary", applied: true,
       rings: clipRings.length, holes: clipRings.filter((q) => q.hole).length,

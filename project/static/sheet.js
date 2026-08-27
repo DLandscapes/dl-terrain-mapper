@@ -27,6 +27,9 @@ export const SCALE_LADDER = [20, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000,
  * @property {(X:number)=>number} X  map easting  → sheet mm
  * @property {(Y:number)=>number} Y  map northing → sheet mm
  * @property {(d:number)=>number} L  map length   → sheet mm
+ * @property {(x:number)=>number} invX sheet mm → map easting
+ * @property {(y:number)=>number} invY sheet mm → map northing
+ * @property {(mm:number)=>number} invL sheet mm → map length
  */
 
 /**
@@ -55,6 +58,15 @@ export function sheetFor(dem, o = {}) {
     X: (X) => margin + (X - dem.originX) * mmPerUnit,
     Y: (Y) => margin + (Y - south) * mmPerUnit,
     L: (d) => d * mmPerUnit,
+    // ⚠️ THE INVERSE LIVES BESIDE THE FORWARD MAP, ON PURPOSE. The shapefile
+    // writer has to put the drawing BACK on the ground, and a second copy of
+    // this arithmetic somewhere else is a copy that drifts the first time a
+    // margin or a scale is touched — the same reason `resolveSource()` is the
+    // one resolver. The transform is a pure translate-and-scale with no
+    // rotation and no skew, so the round trip is exact to floating point.
+    invX: (x) => dem.originX + (x - margin) / mmPerUnit,
+    invY: (y) => south + (y - margin) / mmPerUnit,
+    invL: (mm) => mm / mmPerUnit,
   };
 }
 
