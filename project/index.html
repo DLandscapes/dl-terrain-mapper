@@ -297,6 +297,16 @@ details.panel[open] > summary .sec-badge { display: none; }
 #zoomer { display: flex; gap: 4px; }
 #zoomer button, #explainToggle {
   width: 26px; height: 26px; padding: 0; line-height: 1; font-size: .78rem;
+  /* ⚠️ CENTRED BY THE BOX, NOT BY THE GLYPH. A button that centres its text
+     centres the LINE BOX; where the ink sits inside that box is the font's
+     business, which is how ⤢ ended up high and right. Grid centring puts the
+     icon's own box in the middle and leaves nothing to the face. */
+  display: grid; place-items: center;
+}
+#zoomer button svg {
+  width: 13px; height: 13px; display: block;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 #explainToggle { font-family: var(--font-head); }
 /* The pressed state has to be visible, or the control is a coin toss. */
@@ -714,7 +724,14 @@ body.dropping #viewport::after {
     <div id="zoomer">
       <button id="zIn" title="Closer">+</button>
       <button id="zOut" title="Further">−</button>
-      <button id="zFit" title="Fit the sheet">⤢</button>
+      <!-- ⚠️ AN ICON, NOT A GLYPH. This was ⤢ (U+2922), which sits high and
+           right inside its em box in most faces, so the button looked
+           off-centre no matter what padding it was given — and would look
+           off by a different amount in the next font. Drawn in the same
+           24×24 convention as the panel and layer icons, it is centred by
+           construction. -->
+      <button id="zFit" title="Fit the sheet">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4"/><path d="M15 3h4a2 2 0 0 1 2 2v4"/><path d="M21 15v4a2 2 0 0 1-2 2h-4"/><path d="M3 15v4a2 2 0 0 0 2 2h4"/></svg></button>
     </div>
     <button id="menu-min" title="Fold the menu away">−</button>
     <button id="menu-chip" title="Bring the menu back" hidden>☰</button>

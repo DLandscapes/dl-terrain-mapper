@@ -137,7 +137,12 @@ function setTerse(terse) {
 }
 $("explainToggle").addEventListener("click", () =>
   setTerse(!document.body.classList.contains("terse")));
-setTerse(REMEMBER.get("terse") === "1");
+// ⚠️ HIDDEN BY DEFAULT (Marc). The prose earns its place the first time and
+// is furniture every time after; 48 paragraphs across the two windows is most
+// of their height. The `?` in the viewport strip brings it back, and the
+// choice is remembered — unlike the folds, which always start closed, because
+// this changes how much a panel SAYS rather than what it contains.
+setTerse(REMEMBER.get("terse", "1") === "1");
 
 // ⚠️ THE PANELS OPEN THE WAY THEY WERE LEFT — which is the honest way to give a
 // familiar user a compact interface without taking the front door away from a
@@ -192,7 +197,12 @@ function syncWindows() {
     && !state.image && !state.photos.length;
   $("readout").classList.toggle("empty", nothing);
 }
-for (const d of document.querySelectorAll("details.panel")) {
+// ⚠️ SUB-FOLDS TOO, NOT JUST PANELS. Opening a sub-section changes the
+// panel's height exactly as opening a panel does, and the width grip is kept
+// against the panel's edge by script. This listener used to be attached inside
+// the runtime folder; losing it with that code would have left the grip
+// floating away from the panel on every sub-fold.
+for (const d of document.querySelectorAll("details.panel, details.sub")) {
   d.addEventListener("toggle", () => setTimeout(syncGrip, 0));
 }
 $("menu-min").addEventListener("click", () => foldMenu(true));
@@ -385,69 +395,23 @@ function paintSwatches() {
   }
 }
 
-// ── folding the sub-sections ────────────────────────────────────────────────
-// ⚠️ THE PROPERTIES PANEL GREW ELEVEN SUB-SECTIONS AND BECAME A SCROLL. Marc
-// asked for them to fold, pointing at DL-TerrainDiversity, which does exactly
-// this: `details.sub` with a `summary.subhead`, indented under a hairline spine
-// so a fold reads as INSIDE its panel rather than as the next panel. The
-// grammar below is that one, deliberately — one window family across the tools,
-// not two.
+// ── folding the sub-sections ────────────────────────────────────────
+// ⚠️ THE FOLDS ARE IN THE MARKUP NOW, NOT BUILT HERE. A `foldSubsections()`
+// used to walk each panel at load and wrap every `<div class="subhead">` into a
+// `details.sub` — which worked, and was invisible to anyone reading index.html,
+// so the grammar looked unused and got implemented a second time in the HTML.
+// Two implementations of one thing, one of them dead.
 //
-// ⚠️ THE FOLDS ARE BUILT BY MOVING THE EXISTING NODES, NEVER BY REWRITING THE
-// MARKUP. Every control in here is found by id and already carries its
-// listeners; recreating them would silently drop handlers, and the loss would
-// show up as a control that looks fine and does nothing. Moving a node keeps
-// its identity, its listeners and its id.
+// The markup version is the one kept, for the sibling tool's own reason: folds
+// that exist in the source can be read, diffed and reordered without running
+// anything. `details.sub` + `summary.subhead` + `.sub-body`, indented under a
+// hairline spine so a fold reads as INSIDE its panel rather than as the next
+// panel — one window family across the tools, not two. The styling is in
+// style.css and is unchanged.
 //
-// The sibling tool builds its folds in HTML so they work with no script at all.
-// That is the right rule there and it does not bind here: this page IS ES
-// modules, so with scripting off there is no tool to fold.
-//
-// ⚠️ SECTIONS CARRYING LIVE STATE OPEN BY DEFAULT. A fold that hides a switched-
-// on halftone is the same failure the section badges exist to prevent.
-// ⚠️ EVERY PLACE A FILE IS LOADED OPENS BY DEFAULT. Marc asked three separate
-// times in one session where to load something — the clip boundary, then the
-// features — and each time the answer was "behind a closed panel, then behind a
-// closed fold". Folding was added to shorten a long properties panel; it must
-// not also hide the front door. A section that ACCEPTS A FILE is where a reader
-// starts, so it starts open. The long style sections are what folding is for.
-const OPEN_BY_DEFAULT = new Set([
-  // the ways in
-  "Terrain", "Site photographs", "Orthophoto", "Clip to a tile",
-  "Area features · polygons", "Line features", "Point features",
-  // and the two things read constantly
-  "Labels", "Line style and pass", "Files", "Readout",
-]);
-function foldSubsections(root) {
-  if (!root) return;
-  const heads = [...root.children].filter((e) => e.classList && e.classList.contains("subhead"));
-  for (const head of heads) {
-    const det = document.createElement("details");
-    det.className = "sub";
-    const sum = document.createElement("summary");
-    sum.className = "subhead";
-    sum.textContent = head.textContent;
-    // The Readout head carries an inline rule that separates it from the
-    // settings above; it belongs to the fold now, not to the old heading.
-    const style = head.getAttribute("style");
-    if (style) det.setAttribute("style", style);
-    const body = document.createElement("div");
-    body.className = "sub-body";
-    let node = head.nextSibling;
-    while (node && !(node.nodeType === 1 && node.classList
-      && node.classList.contains("subhead"))) {
-      const next = node.nextSibling;
-      body.appendChild(node);
-      node = next;
-    }
-    det.appendChild(sum);
-    det.appendChild(body);
-    head.replaceWith(det);
-    det.open = OPEN_BY_DEFAULT.has(sum.textContent.trim());
-    // The panel's height changed, so the resize grip has to follow it.
-    det.addEventListener("toggle", () => setTimeout(syncGrip, 0));
-  }
-}
+// Nothing sets a section open any more: they all start closed, every time. See
+// the rule near the top of this file.
+
 
 // ── the raster list ─────────────────────────────────────────────────────────
 /** The settings the properties window is currently editing. */
@@ -2903,12 +2867,6 @@ fillPatternPickers();
 syncFeature();
 paintFeatureList();
 
-foldSubsections($("propBody"));
-// The Readout sits OUTSIDE propBody — it is the panel's output rather than one
-// of its settings — so it needs its own pass, or it stays the one thing in the
-// window that cannot be got out of the way.
-foldSubsections($("readout"));
-for (const body of document.querySelectorAll("#sidebar .sec-body")) foldSubsections(body);
 
 resize();
 syncLayer();
