@@ -41,11 +41,16 @@ export const LINE_STYLES = {
 export const STYLE_ORDER = ["solid", "dashed", "fine_dashed", "long_dashed",
   "dotted", "dash_dot", "dash_dot_dot"];
 
-/** A label for a style, including one that came from a foreign file. */
-export function styleLabel(style, customPattern) {
-  if (style === "custom" && customPattern && customPattern.length >= 2) {
-    return `Custom ${customPattern.map((v) => +(+v).toFixed(2)).join("/")} mm`;
-  }
+/**
+ * A label for a style.
+ *
+ * ⚠️ THE FALLBACK IS NOT DEFENSIVE PADDING, IT IS A FIXED CRASH. A style name that
+ * is not in the table gave `undefined.label`, and the throw landed one line
+ * before `recompile()`: the controls showed the new style, the log listed every
+ * decision, and the drawing silently did not move. Anything unrecognised reads
+ * as solid, which is also what it will be cut as.
+ */
+export function styleLabel(style) {
   return (LINE_STYLES[style] || LINE_STYLES.solid).label;
 }
 
@@ -153,19 +158,25 @@ export function dashPath(pts, closed, pattern) {
 /**
  * Apply a style to a set of paths, and say what it cost.
  *
+ * ⚠️ IT TAKES A NAMED STYLE ONLY. This used to accept a pattern in millimetres
+ * as well, so that a QGIS style's exact "5;2" survived import rather than being
+ * snapped onto the nearest of seven presets. The QGIS style import was removed
+ * on 2026-08-27 and nothing has supplied a pattern since, so the branch was an
+ * unreachable one with passing checks over it — which reads as a working
+ * feature and is worse than no branch at all.
+ *
+ * ⚠️ IF AN SLD OR QML READER EVER RETURNS, THE CAPABILITY IS THREE LINES AWAY.
+ * `dashPath()` below takes any pattern of millimetres and always has — the
+ * feature layers use it directly, which is the proof — so all that is needed is
+ * a `def` built from the imported numbers instead of from the table.
+ *
  * @param {{pts:Float64Array|number[], closed:boolean}[]} paths
  * @param {string} style a key of LINE_STYLES
  * @returns {{paths:Float64Array[], before:number, after:number, marks:number,
  *            shortest:number, verdict:string}}
  */
-export function applyStyle(paths, style, customPattern) {
-  // ⚠️ A CUSTOM PATTERN BEATS THE NAMED ONE. QGIS states dashes in exact
-  // millimetres; snapping "5;2" onto the nearest of seven presets would throw
-  // away the one part of a foreign style that carries across perfectly.
-  const def = (style === "custom" && customPattern && customPattern.length >= 2)
-    ? { label: `Custom ${customPattern.map((v) => +(+v).toFixed(2)).join("/")} mm`,
-        pattern: customPattern.map(Number).filter((v) => v > 0) }
-    : (LINE_STYLES[style] || LINE_STYLES.solid);
+export function applyStyle(paths, style) {
+  const def = LINE_STYLES[style] || LINE_STYLES.solid;
   const out = [];
   let shortest = Infinity;
   for (const p of paths) {

@@ -62,7 +62,6 @@ export const DEFAULTS = {
     // and speed that pass is set to. The picker shows colours because that is
     // how the passes are identified at the machine, not because it is a palette.
     style: "solid", indexStyle: "solid",
-    customDash: null, indexCustomDash: null,
     pass: "DLF-02_score_medium", indexPass: "DLF-03_score_strong",
     labelPass: "DLF-01_score_light",
   },
@@ -415,17 +414,17 @@ export function compile(input) {
     // and heals closed rings across their seam; handed a line already broken
     // into 200 dashes it would place a label in a gap that is not there and
     // reason about closedness that no longer exists.
-    const emit = (want, style, pass, custom) => {
+    const emit = (want, style, pass) => {
       const picked = inMM.filter((l) => l.index === want);
       if (!picked.length) return { after: 0, before: 0, verdict: "continuous", shortest: 0 };
-      const r = applyStyle(picked, style, custom);
+      const r = applyStyle(picked, style);
       for (const piece of r.paths) {
         for (const part of clipToSheet(piece, false, sheet)) add(part.pts, pass, false, undefined, "contours");
       }
       return r;
     };
-    const mid = emit(false, c.style, c.pass, c.customDash);
-    const idx = emit(true, c.indexStyle, c.indexPass, c.indexCustomDash);
+    const mid = emit(false, c.style, c.pass);
+    const idx = emit(true, c.indexStyle, c.indexPass);
 
     // ── hachures: strokes down the fall line, hung off these contours ──────
     // ⚠️ HUNG OFF THE CONTOURS THAT WERE ACTUALLY TRACED, in MAP units, before
@@ -473,15 +472,14 @@ export function compile(input) {
       for (const part of clipToSheet(st, false, sheet)) add(part.pts, c.labelPass, false, undefined, "contour-labels");
     }
 
-    const styleName = (k, custom) => styleLabel(k, custom);
     contourReports.push({
       name: layer.name || layer.dem.name || "raster",
       interval: iv, levels: new Set(traced.map((l) => l.level)).size,
       paths: traced.length, points: traced.reduce((a, l) => a + l.pts.length / 2, 0),
       labels: placed,
       datum: datumShift ? `local, ${datumShift.toFixed(2)} m subtracted` : "absolute",
-      style: styleName(c.style, c.customDash),
-      indexStyle: styleName(c.indexStyle, c.indexCustomDash),
+      style: styleLabel(c.style),
+      indexStyle: styleLabel(c.indexStyle),
       pass: c.pass, indexPass: c.indexPass,
       hachures: hachureReport,
       drawn: mid.after + idx.after,

@@ -585,13 +585,13 @@ function paintLayers() {
       selected: i === state.active && state.selKind === "raster",
       off: !L.on, handle: true, colour: passColour(c.pass), mark: layerIcon('raster'),
       name: L.name,
-      detail: `${i + 1} · ${i === 0 ? "primary · " : ""}${styleLabel(c.style, c.customDash)}`,
+      detail: `${i + 1} · ${i === 0 ? "primary · " : ""}${styleLabel(c.style)}`,
       // ⚠️ THE FULL NAME GOES FIRST. Rows truncate with an ellipsis, and site
       // rasters are named LAR3072_A1_plate_A1_DTM_1m — every distinguishing
       // character is at the END, so every truncated row looks identical.
       title: `${L.name}\n${L.dem.ncols}×${L.dem.nrows} at ${L.dem.cell} m`
         + `${L.dem.crs ? ", " + L.dem.crs : ""}\n`
-        + `${styleLabel(c.style, c.customDash)} on ${c.pass}\n`
+        + `${styleLabel(c.style)} on ${c.pass}\n`
         + (i === 0 ? "The primary raster defines the sheet." : "An elevation raster."),
       onSelect: () => {
         state.active = i; state.selKind = "raster";
@@ -718,18 +718,6 @@ function syncLayer() {
   $("lSpace").value = String(c.labelSpacing);
   $("lOrient").value = c.orientation;
   $("cDatum").value = c.datum;
-  // ⚠️ "Custom" IS ONLY OFFERED WHEN SOMETHING SUPPLIED ONE. A picker entry that
-  // cannot be chosen from nothing is a dead control; it appears when a QGIS
-  // style brings a pattern with it, and carries that pattern's own label.
-  for (const [id, key, pat] of [["cStyle", "style", c.customDash],
-                                ["cIdxStyle", "indexStyle", c.indexCustomDash]]) {
-    const el = $(id);
-    let opt = [...el.options].find((o) => o.value === "custom");
-    if (c[key] === "custom") {
-      if (!opt) { opt = document.createElement("option"); opt.value = "custom"; el.appendChild(opt); }
-      opt.textContent = styleLabel("custom", pat);
-    } else if (opt) el.removeChild(opt);
-  }
   $("cStyle").value = c.style;
   $("cIdxStyle").value = c.indexStyle;
   $("cPass").value = c.pass;
@@ -1068,13 +1056,8 @@ function gather() {
   c.labelSpacing = +$("lSpace").value;
   c.orientation = $("lOrient").value;
   c.datum = $("cDatum").value;
-  // Choosing a named style discards the imported pattern; choosing "custom"
-  // keeps whatever brought it.
-  const prevStyle = c.style, prevIdx = c.indexStyle;
   c.style = $("cStyle").value;
   c.indexStyle = $("cIdxStyle").value;
-  if (prevStyle === "custom" && c.style !== "custom") c.customDash = null;
-  if (prevIdx === "custom" && c.indexStyle !== "custom") c.indexCustomDash = null;
   c.pass = $("cPass").value;
   c.indexPass = $("cIdxPass").value;
   c.labelPass = $("cLabelPass").value;

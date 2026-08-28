@@ -2219,18 +2219,22 @@ group("line styles");
     const r = applyStyle([{ pts: new Float64Array(ring), closed: true }], "solid");
     const p = r.paths[0];
     return r.after === 1 && near(p[0], p[p.length - 2], 1e-9) && near(p[1], p[p.length - 1], 1e-9); })());
-  // A style that came from a foreign file has no entry in LINE_STYLES. Reading
-  // its label through the table was `undefined.label`, and the throw aborted the
-  // import handler one line before it recompiled: the controls showed the new
-  // style, the log listed every decision, and the drawing silently did not move.
+  // A style name that is not in LINE_STYLES was read as `undefined.label`, and
+  // the throw aborted the import handler one line before it recompiled: the
+  // controls showed the new style, the log listed every decision, and the
+  // drawing silently did not move. The fallback is that crash, fixed.
   ok("styleLabel survives a style that is not in the table",
-    styleLabel("custom", [6, 1.5]) === "Custom 6/1.5 mm"
-    && styleLabel("nonsense") === "Solid"
-    && LINE_STYLES.custom === undefined);
-  ok("a custom pattern is dashed with, not ignored", (() => {
+    styleLabel("nonsense") === "Solid" && LINE_STYLES.custom === undefined);
+  // ⚠️ AND AN UNRECOGNISED STYLE IS CUT AS SOLID, NOT DASHED. `applyStyle` used to
+  // take a pattern in millimetres beside the name, so that a QGIS style's exact
+  // "5;2" survived import; that reader was removed on 2026-08-27 and nothing has
+  // supplied a pattern since, so the branch went with it. What must hold now is
+  // that a name nobody recognises produces ONE continuous path — the safe
+  // reading, and the one the label above promises.
+  ok("an unrecognised style is cut as solid, not dashed", (() => {
     const r = applyStyle([{ pts: new Float64Array([0, 0, 100, 0]), closed: false }],
-      "custom", [10, 10]);
-    return r.after === 5 && /Custom/.test(styleLabel("custom", [10, 10])); })());
+      "custom");
+    return r.after === 1 && r.verdict === "continuous"; })());
   ok("the cost of dashing is reported, not hidden", (() => {
     const r = applyStyle([{ pts: new Float64Array(ring), closed: true }], "dotted");
     return r.before === 1 && r.after > 100 && typeof r.verdict === "string"; })());
