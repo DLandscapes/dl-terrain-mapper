@@ -31,6 +31,8 @@ import { applyStyle, LINE_STYLES, styleLabel } from "./linestyle.js";
 import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
+import { SOLID_MM, BURN_MM } from "./patterns.js";
+import { strokeBand, bandFill } from "./stroke-band.js";
 import { cutSections } from "./sections.js";
 import { clipDrawing, ringsBBox, pointInRings } from "./clip.js";
 import { buildFeature } from "./features.js";
@@ -87,7 +89,12 @@ export const OPERATIONS = {
   halftone: "DLF-00_engrave",
   halftoneB: "DLF-02_score_medium",
   halftoneC: "DLF-03_score_strong",
-  furniture: "DLF-01_score_light",
+  // ⚠️ FURNITURE ENGRAVES, IT DOES NOT SCORE (Marc). A scale bar and a
+  // north point are things to READ, not cuts and not score lines that happen
+  // to be legible — and engrave is the pass where a filled cell is a filled
+  // cell. It also stops the furniture being mistaken for part of the drawing
+  // at the machine: it is on a different operation from every line of terrain.
+  furniture: "DLF-00_engrave",
   sheetFrame: "DLF-05_cut_outer",
   sheetBounds: "DLF-99_sheet",
 };
@@ -100,6 +107,147 @@ export const OPERATIONS = {
  * @property {object} report
  * @property {string[]} warnings
  */
+
+/**
+ * Engraved lettering: each single stroke drawn as the band it covers, filled.
+ *
+ * ⚠️ THE SINGLE-STROKE FONT IS A SKELETON, NOT A TYPEFACE. It exists because a
+ * laser SCORES text as a path, and at a hairline that is all a letter can be.
+ * On the engrave pass the head sweeps a field instead, so a letter can have
+ * weight — and weight is the whole difference between something that reads as
+ * drawn and something that reads as plotted.
+ *
+ * ⚠️ IT IS STILL NOT THE BRAND FACE. Quattrocento Sans ships with this tool as a
+ * .ttf for the interface, and putting its real outlines on a plate needs a
+ * TrueType glyph parser — glyf, the quadratic curves, cmap, hmtx. This gives the
+ * skeleton weight; it does not give it Quattrocento's shapes.
+ */
+function addLettering(add, strokes, layer, size) {
+  const w = textWeight(size);
+  for (const st of strokes) {
+    // ⚠️ BELOW THE MERGE DISTANCE THERE IS NOTHING TO BAND, AND THE PLAIN STROKE
+    // IS DRAWN INSTEAD. A band narrower than one burn is one burn, so banding it
+    // would add an outline half a burn outside the skeleton on each side and
+    // DOUBLE the weight the caller asked for. Measured before this test existed:
+    // a 2 mm footer asked for 0.30 mm and inked at 0.60 — 30% of cap height,
+    // which closes the counters of an 8 and an 0. See textWeight().
+    if (w <= 0) { add(st, layer); continue; }
+    // ⚠️ A TIGHT MITRE LIMIT: letter apexes bevel rather than spike past the
+    // cap line. See strokeBand's miterLimit.
+    const band = strokeBand(st, w, false, 1.15);
+    if (!band.length) { add(st, layer); continue; }
+    for (const r of band) add(r.pts, layer, true);
+    for (const q of bandFill(st, w, SOLID_MM, false)) add(q, layer);
+  }
+}
+
+/**
+ * The weight a letterform gets at a given size.
+ *
+ * ⚠️ PROPORTIONAL, NOT A SETTING. A stroke weight is a fraction of cap height in
+ * every typeface ever drawn; fixing it in millimetres would make a 2 mm footer
+ * look bold beside a 6 mm title set from the same table. 12% is about a regular
+ * weight — Quattrocento Sans, the brand face, sits near it — and it keeps the
+ * counters of an 8 and an R open at 2 mm, which a heavier stroke closes.
+ *
+ * ⚠️ AND THE ANSWER IS THE WEIGHT *ABOVE* THE BURN, NOT THE WEIGHT. A stroke on
+ * the engrave pass is already SOLID_MM of ink wide — the head sweeps a spot, not
+ * a mathematical line — so the skeleton by itself inks at 0.3 mm and a band is
+ * only worth building for whatever is asked for BEYOND that. Returning the full
+ * 12% and banding it added the burn on top of itself: 0.38 mm asked for on a
+ * 3.2 mm title, 0.68 mm inked, a black weight where a regular was specified.
+ *
+ * ⚠️ SO AT PLATE SIZES THIS RETURNS ZERO, AND THAT IS THE HONEST FINDING. 12% of
+ * cap height only clears a 0.3 mm burn above 2.5 mm caps, and every piece of
+ * furniture lettering on a sheet — a 1.6 mm N, a 1.8 mm legend, a 2 mm footer, a
+ * 3.2 mm title — is at or under it. **The burn width IS the weight at this size,
+ * and giving the skeleton weight cannot change how the lettering reads.** What
+ * would is the real face: Quattrocento Sans's own outlines, which needs the
+ * TrueType glyph parser. This function is what proves that, rather than asserting
+ * it.
+ */
+const textWeight = (size) => {
+  const extra = size * 0.12 - SOLID_MM;
+  // ⚠️ AND A BAND NARROWER THAN ONE BURN IS NOT A BAND. At 3.2 mm the extra came
+  // to 0.084 mm — a quarter of a burn — and building an outline plus a fill for
+  // it put a second burn round the first for a weight the material cannot hold.
+  // Weight becomes expressible at 5 mm caps; below that the skeleton is it.
+  return extra >= SOLID_MM ? extra : 0;
+};
+
+/**
+ * How far the INK of a letter reaches beyond its geometry, each side.
+ *
+ * ⚠️ EXPORTED BECAUSE THE MARGIN TEST HAS TO MEASURE THE SAME THING THE READER
+ * DOES. A furniture path is a centreline; what sits on the material is that
+ * centreline plus half a burn, plus half the band when there is one. A test that
+ * measured the geometry passed while the ink was 0.15 mm nearer the edge than
+ * asked, and failed when the ink was finally right.
+ */
+export const letterInkHalf = (size) => (textWeight(size) + SOLID_MM) / 2;
+
+/**
+ * Fill a small closed ring solid, for the furniture's black parts.
+ *
+ * ⚠️ SMALL AND CONVEX, WHICH IS WHY THIS IS NOT `fillRegion`. A scale-bar cell
+ * and half an arrowhead are a few millimetres across; the general fill rotates
+ * the region, builds a family, clips it and caps the row count, all of which is
+ * machinery these two shapes do not need. Scanlines straight across the ring's
+ * own bounding box, clipped by crossings, is exact for a convex shape and is the
+ * whole of it.
+ *
+ * ⚠️ AT SOLID_MM, THE MERGE DISTANCE — one of the coupon's owed numbers. Too
+ * wide and a filled cell comes off the machine as stripes.
+ */
+function solidFill(ring) {
+  const out = [];
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let i = 0; i < ring.length; i += 2) {
+    if (ring[i] < x0) x0 = ring[i]; if (ring[i] > x1) x1 = ring[i];
+    if (ring[i + 1] < y0) y0 = ring[i + 1]; if (ring[i + 1] > y1) y1 = ring[i + 1];
+  }
+  const n = ring.length / 2;
+  // ⚠️ THE ROWS ARE DISTRIBUTED BETWEEN THE INSETS, NOT STEPPED FROM ONE EDGE.
+  // Stepping at SOLID_MM from the bottom leaves whatever the height is not a
+  // multiple of hanging off the top, and the ink then overshoots by that much —
+  // measured 0.045 mm on a 1.8 mm block, which is nothing until it is a scale
+  // bar. Fitting `n` rows between `BURN_MM/2` inside each edge puts the OUTER
+  // rows exactly on the boundary once they are stroked, and closes the spacing a
+  // little rather than opening it: tighter than the merge distance still merges,
+  // wider does not.
+  const inset = BURN_MM / 2;
+  const span = (y1 - inset) - (y0 + inset);
+  const rows = span > 0 ? Math.ceil(span / SOLID_MM) + 1 : 1;
+  const step = rows > 1 ? span / (rows - 1) : 0;
+  for (let k = 0; k < rows; k++) {
+    const y = rows > 1 ? y0 + inset + k * step : (y0 + y1) / 2;
+    const xs = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = ring[i * 2 + 1], yj = ring[j * 2 + 1];
+      if ((yi > y) !== (yj > y)) {
+        const xi = ring[i * 2], xj = ring[j * 2];
+        xs.push(xi + ((y - yi) / (yj - yi)) * (xj - xi));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let t = 0; t + 1 < xs.length; t += 2) {
+      // ⚠️ INSET BY HALF A BURN AT EACH END TOO, BECAUSE A STROKE HAS WIDTH. A
+      // round-ended stroke run to the ring's own edge puts half a burn PAST it —
+      // which on a SCALE BAR, the one thing on the sheet a reader measures
+      // against, is a bar longer than the number printed beside it.
+      const a = xs[t] + inset, b = xs[t + 1] - inset;
+      if (b - a > 1e-9) out.push([a, y, b, y]);
+      // A span narrower than one burn is already covered by the burn itself —
+      // the taper at the point of the north needle. Drawing a zero-length stroke
+      // there would be a dwell, and a dwell is a hole.
+      else if (xs[t + 1] - xs[t] > 0.05) {
+        const mid = (xs[t] + xs[t + 1]) / 2;
+        out.push([mid, y, mid + 1e-6, y]);
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * Compile a drawing.
@@ -912,7 +1060,12 @@ export function compile(input) {
   // floor of 5 mm from the baseline left the cap 1.8 mm from the top edge next
   // to a 4 mm left gap, and the corner looked pinched.
   const TITLE_SIZE = 3.2;
-  const fTitle = fx + TITLE_SIZE;
+  // ⚠️ THE GAP IS MEASURED TO THE INK, NOT TO THE BASELINE (Marc, 2026-08-24:
+  // the title's gap from the top edge equals its gap from the left). Ink reaches
+  // half its width above the cap line, and its width is the band plus the burn
+  // the band is drawn with — SOLID_MM is there even when the band is not, which
+  // is the case at every size furniture is set in.
+  const fTitle = fx + TITLE_SIZE + (textWeight(TITLE_SIZE) + SOLID_MM) / 2;
   // ⚠️ WITH A CLIP BOUNDARY THE RECTANGULAR FRAME IS NOT DRAWN. The tile's own
   // outline becomes the outer cut, added after clipping — a plate cannot have
   // two outer cuts, and the rectangle would slice straight through the shape
@@ -930,8 +1083,24 @@ export function compile(input) {
     const bar = scaleBar(sheet, { x: fx, y: fBar, target: 45 });
     barAt = seek(fx, fBar, 1, 1, (x, y) => spanFits(x, y, bar.mm));
     if (barAt) {
-      for (const p of scaleBar(sheet, { x: barAt.x, y: barAt.y, target: 45 }).paths) {
-        addFurniture(p, OPERATIONS.furniture);
+      const placed = scaleBar(sheet, { x: barAt.x, y: barAt.y, target: 45 });
+      for (const p of placed.paths) addFurniture(p, OPERATIONS.furniture);
+      // ⚠️ THE FILLED CELLS ARE FILLED WITH GEOMETRY. A closed ring on the
+      // engrave pass is an outline until something puts strokes inside it —
+      // defect 7 — so each cell is filled like any other area.
+      //
+      // ⚠️ AND THE FILL IS ALL THERE IS: THE OUTLINE IS NOT DRAWN. Everywhere
+      // else in the tool an outline plus a fill is right, because the outline
+      // is what keeps an engraved edge crisp. Not here. A stroke on the engrave
+      // pass burns SOLID_MM wide centred on its path, so an outline run round
+      // the ring puts half a burn OUTSIDE the geometry — and this bar is the one
+      // object on the sheet whose dimensions are its content. A 45 mm bar came
+      // out 45.3, and the thin half came out 0.9 mm against a 1.8 mm block
+      // instead of 0.6, so the 1:3 thickness step that IS the halfway mark read
+      // as 1:2. The inset rows fill the rectangle exactly; nothing else is
+      // needed and anything else is a lie about a measurement.
+      for (const ring of placed.rings) {
+        for (const q of solidFill(ring)) addFurniture(q, OPERATIONS.furniture);
       }
       foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
     } else furnitureDropped.push("the scale bar");
@@ -940,9 +1109,18 @@ export function compile(input) {
     const at = seek(fbox.x1 - Math.max(M, 4), fNorth, -1, 1,
       (x, y) => fits(x - 1.6, y) && fits(x + 1.6, y) && fits(x, y + 7));
     if (at) {
-      for (const p of northPoint({ x: at.x, y: at.y, size: 7 })) {
-        addFurniture(p, OPERATIONS.furniture);
+      const np = northPoint({ x: at.x, y: at.y + 3.5, size: 3.5 });
+      // The ring is a hairline; the needle and its pivot are filled.
+      for (const p of np.paths) addFurniture(p, OPERATIONS.furniture, true);
+      for (const ring of np.rings) {
+        addFurniture(ring, OPERATIONS.furniture, true);
+        for (const q of solidFill(ring)) addFurniture(q, OPERATIONS.furniture);
       }
+      // ⚠️ THE N SITS ABOVE THE RING, where a compass card carries it — not
+      // inside, where the needle is already using the space.
+      addLettering(addFurniture,
+        textStrokes("N", { x: at.x, y: np.labelY, size: 1.6, anchor: "middle" }),
+        OPERATIONS.furniture, 1.6);
     } else furnitureDropped.push("the north point");
   }
   if (contourReport) foot.push(`CONTOURS ${fmt(interval)} M`);
@@ -956,9 +1134,9 @@ export function compile(input) {
     const at = spanFits(from.x, from.y, w) ? from
       : seek(from.x, from.y, 1, 1, (x, y) => spanFits(x, y, w));
     if (at) {
-      for (const st of textStrokes(text, { x: at.x, y: at.y, size: 2, tracking: 8 })) {
-        addFurniture(st, OPERATIONS.furniture);
-      }
+      addLettering(addFurniture,
+        textStrokes(text, { x: at.x, y: at.y, size: 2, tracking: 8 }),
+        OPERATIONS.furniture, 2);
     } else furnitureDropped.push("the footer");
   }
   if (sym.sheet.title) {
@@ -966,9 +1144,9 @@ export function compile(input) {
     const w = measure(t, { size: TITLE_SIZE, tracking: 10 }).width;
     const at = seek(fx, fbox.y1 - fTitle, 1, -1, (x, y) => spanFits(x, y, w));
     if (at) {
-      for (const st of textStrokes(t, {
-        x: at.x, y: at.y, size: TITLE_SIZE, tracking: 10,
-      })) addFurniture(st, OPERATIONS.furniture);
+      addLettering(addFurniture,
+        textStrokes(t, { x: at.x, y: at.y, size: TITLE_SIZE, tracking: 10 }),
+        OPERATIONS.furniture, TITLE_SIZE);
     } else furnitureDropped.push("the title");
   }
 
@@ -979,9 +1157,8 @@ export function compile(input) {
     const at = seek(fbox.x1 - Math.max(M, 4) - lw, fbox.y0 + Math.max(M * 0.7, 4.5), -1, 1,
       (x, y) => spanFits(x, y, lw));
     if (at) {
-      for (const st of textStrokes(label, {
-        x: at.x, y: at.y, size: 1.8, tracking: 6, anchor: "start",
-      })) addFurniture(st, OPERATIONS.furniture);
+      addLettering(addFurniture, textStrokes(label, { x: at.x, y: at.y, size: 1.8,
+        tracking: 6, anchor: "start" }), OPERATIONS.furniture, 1.8);
     } else furnitureDropped.push("the halftone legend");
   }
 

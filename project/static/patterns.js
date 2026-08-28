@@ -31,6 +31,7 @@ import { clipPathToRings, pointInRings, ringsBBox } from "./clip.js";
  * the Slicer, so a preset carried between the tools still means something.
  */
 export const FILL_PATTERNS = {
+  solid: ["linear", "Solid"],
   lines: ["linear", "Lines"],
   double: ["linear", "Double lines"],
   dashes: ["linear", "Dashes"],
@@ -91,13 +92,62 @@ const circle = (cx, cy, r, n = 8) => {
  */
 const capSpacing = (s, half, maxRows = 400) => Math.max(s, (2 * half) / maxRows);
 
-/** Centre and half-diagonal of a set of rings — the frame a family fills. */
+/**
+ * ⚠️ SOLID IS NOT A FILL, IT IS A SPACING. Nothing this tool draws is filled —
+ * a laser makes a solid field by sweeping lines close enough together that the
+ * burns merge, and that is what this is: `lines` at the distance where they
+ * stop reading as lines. Expressing it as geometry rather than as a "filled"
+ * flag is the same rule that fixed defect 7.
+ *
+ * ⚠️ 0.3 mm IS A GUESS AND IS ONE OF THE COUPON'S OWED NUMBERS. Too wide and a
+ * "solid" comes off the machine as visible stripes; too tight and it is burn
+ * time spent going over ground already black. The SP500 test sheet settles it.
+ */
+export const SOLID_MM = 0.3;
+
+/**
+ * How WIDE one of those burns is, for anything drawing the material.
+ *
+ * ⚠️ WIDER THAN THE SPACING, BECAUSE MERGING IS OVERLAP AND NOT ABUTMENT. Two
+ * neighbouring engrave passes each cut a groove with a rounded profile; laid
+ * exactly edge to edge they leave a ridge between them, which is why raster
+ * engraving is run with an overlap rather than a tangency. So if 0.3 mm is the
+ * spacing at which burns merge, the burn is wider than 0.3 mm — and drawing it
+ * at exactly the spacing showed a scale bar as five black bands separated by
+ * grey seams, which is the preview inventing a defect the material will not
+ * have.
+ *
+ * ⚠️ 15% IS THE COMMON WORKSHOP FIGURE AND IS A GUESS LIKE ITS PARENT. It is
+ * tied to `SOLID_MM` rather than set on its own so the coupon settles both with
+ * one reading, and so the two can never drift apart.
+ *
+ * ⚠️ THIS IS FOR DRAWING ONLY, NEVER FOR SPACING. Fills step at `SOLID_MM`.
+ * Stepping them at the burn width instead would leave real gaps.
+ */
+export const BURN_MM = SOLID_MM * 1.15;
+
+/**
+ * The frame a family fills.
+ *
+ * ⚠️ `half` IS THE DIAGONAL AND IS TOO BIG TO STEP ROWS ACROSS. The rings handed
+ * here are ALREADY rotated into the family's own frame, so the bbox is the true
+ * extent and the diagonal is only a safe over-estimate — safe for how far a line
+ * must REACH, and badly wrong for how many rows there are.
+ *
+ * A 2 mm band 800 mm long has a 400 mm half-diagonal. Stepping rows across that
+ * at 0.3 mm asks for 2,667 rows when the band holds seven, so the row cap fires
+ * and coarsens the spacing until ONE row is left — a wide engraved line comes
+ * out as a hairline, and the warning blames the spacing. Rows step across
+ * `halfY`; lines reach across `halfX`.
+ */
 function frameOf(rings) {
   const b = ringsBBox(rings);
   return {
     cx: (b.x0 + b.x1) / 2,
     cy: (b.y0 + b.y1) / 2,
     half: Math.hypot(b.x1 - b.x0, b.y1 - b.y0) / 2 + 1,
+    halfX: (b.x1 - b.x0) / 2 + 1,
+    halfY: (b.y1 - b.y0) / 2 + 1,
   };
 }
 
@@ -111,8 +161,8 @@ const rowsOf = (cy, half, s) => {
 // ── line families ───────────────────────────────────────────────────────────
 // Each returns an array of flat [x,y,x,y,…] polylines in the axis-aligned frame.
 
-const famLines = (cx, cy, half, s) =>
-  rowsOf(cy, half, s).map((y) => [cx - half, y, cx + half, y]);
+const famLines = (cx, cy, half, s, halfY = half) =>
+  rowsOf(cy, halfY, s).map((y) => [cx - half, y, cx + half, y]);
 
 const famDouble = (cx, cy, half, s) => {
   const out = [];
@@ -271,7 +321,7 @@ const famInterference = (cx, cy, half, s) => {
 };
 
 const LINE_FAMILIES = {
-  lines: famLines, double: famDouble, dashes: famDashes, dashdot: famDashdot,
+  solid: famLines, lines: famLines, double: famDouble, dashes: famDashes, dashdot: famDashdot,
   cross: famCross, zigzag: famZigzag, waves: famWaves, ripples: famRipples,
   herringbone: famHerringbone, brick: famBrick, hex: famHex, trigrid: famTrigrid,
   interference: famInterference, scales: famScales,
@@ -412,7 +462,9 @@ export function fillRegion(rings, o = {}) {
   const pattern = o.pattern || "lines";
   const rot = o.rotationDeg ?? 45;
   const minLen = o.minLength ?? 1;
-  let spacing = o.spacing > 0 ? o.spacing : 2;
+  // Solid takes its spacing from the material, not from the control.
+  let spacing = pattern === "solid" ? (o.solidMM > 0 ? o.solidMM : SOLID_MM)
+    : (o.spacing > 0 ? o.spacing : 2);
   if (!rings || !rings.length) return { strokes: [], capped: false };
 
   if (pattern === "echo") {
@@ -428,15 +480,18 @@ export function fillRegion(rings, o = {}) {
     ? rings.map((r) => ({ hole: r.hole,
         pts: Float64Array.from(rotateAll([Array.from(r.pts)], f0.cx, f0.cy, -rot)[0]) }))
     : rings;
-  const { cx, cy, half } = frameOf(work);
+  const { cx, cy, half, halfY } = frameOf(work);
   const capped0 = spacing;
-  spacing = capSpacing(spacing, half);
+  // ⚠️ CAPPED ON THE DIRECTION THE ROWS STEP, not on the diagonal. Capping on the
+  // diagonal made the row limit depend on a region's LENGTH, which the scanlines
+  // never cross — so a long thin band was coarsened until nothing was left of it.
+  spacing = capSpacing(spacing, halfY);
   const capped = spacing > capped0 + 1e-9;
 
   /** @type {number[][]} */
   let raw = [];
   if (LINE_FAMILIES[pattern]) {
-    raw = LINE_FAMILIES[pattern](cx, cy, half, spacing);
+    raw = LINE_FAMILIES[pattern](cx, cy, half, spacing, halfY);
   } else if (SYMBOLS[pattern]) {
     let { gx, gy, stagger, jitter, margin, make } = SYMBOLS[pattern](spacing);
     // ⚠️ CAP THE SYMBOL COUNT the way the Slicer does — a huge bed at a fine

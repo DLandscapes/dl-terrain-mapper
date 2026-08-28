@@ -17,6 +17,7 @@
 // translation, so nothing in this file knows about rasters or scales.
 
 import { fillRegion } from "./patterns.js";
+import { strokeBand, bandFill } from "./stroke-band.js";
 import { dashPath } from "./linestyle.js";
 
 /**
@@ -49,8 +50,13 @@ export const FEATURE_DEFAULTS = {
     linetype: "solid", linetypeScale: 1, pass: "DLF-02_score_medium",
     // ⚠️ DENSITY, NOT SPACING, IS WHAT A READER SEES. A HIGH value must give a
     // TIGHTER fill, so the mapping is inverted on purpose: hi -> minMM.
-    densityBy: { field: null, lo: 0, hi: 0, minMM: 0.8, maxMM: 5 } },
-  line: { linetype: "dashed", linetypeScale: 1, pass: "DLF-02_score_medium" },
+    densityBy: { field: null, lo: 0, hi: 0, minMM: 0.8, maxMM: 5 },
+    // Engrave only: the outline drawn as a band of this width. See widthOf().
+    widthMM: 0, widthBy: { field: null, lo: 0, hi: 0, minMM: 0.3, maxMM: 3 } },
+  line: { linetype: "dashed", linetypeScale: 1, pass: "DLF-02_score_medium",
+    pattern: "solid", spacingMM: 0.3, rotationDeg: 0,
+    densityBy: { field: null, lo: 0, hi: 0, minMM: 0.3, maxMM: 3 },
+    widthMM: 0, widthBy: { field: null, lo: 0, hi: 0, minMM: 0.3, maxMM: 4 } },
   point: { radiusMM: 2.0, linetype: "solid", linetypeScale: 1,
     pattern: "none", spacingMM: 1.0, pass: "DLF-02_score_medium",
     symbol: "circle",
@@ -60,6 +66,21 @@ export const FEATURE_DEFAULTS = {
     sizeBy: { field: null, lo: 0, hi: 0, minMM: 1.2, maxMM: 5, mode: "area" },
     rotateBy: { field: null, lo: 0, hi: 0, mode: "degrees", offsetDeg: 0 } },
 };
+
+/** The pass a width is meaningful on. Everywhere else, weight IS the pass. */
+export const ENGRAVE_PASS = "DLF-00_engrave";
+
+/**
+ * Does this style draw wide bands rather than lines?
+ *
+ * ⚠️ ONLY ON THE ENGRAVE PASS, AND ONLY THERE ON PURPOSE. A score or a cut is a
+ * path the head follows once; its weight is the power and speed configured for
+ * that pass, and a "width" on it would be a number the machine has nowhere to
+ * put. Engrave is the one raster operation — the head sweeps a field — so a
+ * width there is a real, makeable thing.
+ */
+export const widthOf = (st) =>
+  (st.pass === ENGRAVE_PASS && st.widthMM > 0) ? st.widthMM : 0;
 
 /** A circle as a closed polyline. Points become symbols; symbols are drawn. */
 function circlePath(cx, cy, r, segments = 24) {
@@ -212,6 +233,72 @@ export function angleValue(v, lo, hi, mode = "degrees", offsetDeg = 0) {
 const scaled = (pattern, k) =>
   (!pattern || !pattern.length ? null : pattern.map((v) => v * (k > 0 ? k : 1)));
 
+/** Is (x,y) inside this one ring? Even-odd crossings, the standard test. */
+function inRing(x, y, p) {
+  let inside = false;
+  const n = p.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = p[i * 2], yi = p[i * 2 + 1];
+    const xj = p[j * 2], yj = p[j * 2 + 1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Group a flat ring list into FEATURES: each outer with the holes inside it.
+ *
+ * ⚠️ A SHAPEFILE HAS NO FEATURE BOUNDARIES IN ITS RING LIST. Outers and holes
+ * arrive in one sequence and only the winding says which is which, so a layer of
+ * five beds with three courtyards is eight rings and nothing states that hole 6
+ * belongs to bed 2. Containment is what recovers it, and it has to be recovered
+ * before anything can be styled PER FEATURE.
+ *
+ * ⚠️ A HOLE INSIDE NO OUTER IS KEPT, NOT DISCARDED. Winding is a convention that
+ * files break; an unmatched "hole" is far more likely to be an outer ring wound
+ * the other way than a genuine orphan, and dropping it would silently lose a
+ * whole polygon.
+ *
+ * @param {{pts:Float64Array, hole:boolean}[]} rings
+ * @returns {{rings:{pts:Float64Array,hole:boolean}[], outerIndex:number}[]}
+ */
+function groupRings(rings) {
+  const groups = [];
+  const owner = new Map();
+  rings.forEach((r, i) => {
+    if (r.hole) return;
+    owner.set(i, groups.length);
+    groups.push({ rings: [r], outerIndex: i });
+  });
+  if (!groups.length) {
+    // Every ring called itself a hole. Treat them as separate features rather
+    // than as one region with no outside.
+    return rings.map((r, i) => ({ rings: [r], outerIndex: i }));
+  }
+  rings.forEach((r, i) => {
+    if (!r.hole) return;
+    const x = r.pts[0], y = r.pts[1];
+    // ⚠️ THE SMALLEST CONTAINING OUTER WINS. Nested islands — a lake with an
+    // island with a pond — put a hole inside more than one outer, and the
+    // innermost is the one it belongs to.
+    let best = -1, bestArea = Infinity;
+    for (const g of groups) {
+      const o = g.rings[0].pts;
+      if (!inRing(x, y, o)) continue;
+      let a = 0;
+      for (let k = 0, n = o.length / 2; k < n; k++) {
+        const j2 = (k + 1) % n;
+        a += o[k * 2] * o[j2 * 2 + 1] - o[j2 * 2] * o[k * 2 + 1];
+      }
+      a = Math.abs(a) / 2;
+      if (a < bestArea) { bestArea = a; best = groups.indexOf(g); }
+    }
+    if (best >= 0) groups[best].rings.push(r);
+    else groups.push({ rings: [r], outerIndex: i });
+  });
+  return groups;
+}
+
 /**
  * Draw one feature layer.
  *
@@ -240,6 +327,48 @@ export function buildFeature(spec, o = {}) {
   const onSheet = (x, y) => !sh || (x >= 0 && y >= 0 && x <= sh.width && y <= sh.height);
 
   let drawn = 0, dropped = 0, fillStrokes = 0, capped = false, unmeasured = 0;
+
+  // ⚠️ ONE PLACE THAT READS AN ATTRIBUTE, USED BY EVERY BRANCH. Each binding
+  // that grew separately — size, rotation, density — read its row a slightly
+  // different way, and one of them read row 0 for the whole layer. A single
+  // resolver is how that stops being possible again.
+  const allRows = spec.rows || [];
+  /**
+   * @param {object} by the binding: {field, lo, hi} plus the two output bounds
+   * @param {number} i which feature
+   * @param {number} fixed the value when nothing is bound
+   */
+  const driven = (by, i, fixed, lo, hi, mode = "linear") => {
+    if (!by || !by.field) return fixed;
+    const row = allRows[i];
+    const v = row ? row[by.field] : null;
+    if (!Number.isFinite(v)) { unmeasured++; return fixed; }
+    return scaleValue(v, by.lo, by.hi, lo, hi, mode);
+  };
+  /** The band width for feature `i`, or 0 when this style draws lines. */
+  const bandWidth = (i) => {
+    const base = widthOf(st);
+    if (!base) return 0;
+    const wBy = st.widthBy || {};
+    return Math.max(0, driven(wBy, i, base, wBy.minMM ?? base, wBy.maxMM ?? base));
+  };
+  /**
+   * Which attribute row a grouped feature's OUTER RING arrived on.
+   *
+   * ⚠️ `outerIndex` IS A POSITION IN THE LIST HANDED TO groupRings(), which is
+   * not the position the file delivered — degenerate rings are dropped first.
+   * `srcIndex` is stamped on before any of that, so it is the only index that
+   * still means "row i of the .dbf".
+   */
+  const srcOf = (g) => {
+    const o = g.rings[0];
+    return o && o.srcIndex !== undefined ? o.srcIndex : g.outerIndex;
+  };
+  /** The fill spacing for feature `i`. Density is INVERTED: high value, tight fill. */
+  const fillSpacing = (i) => {
+    const d = st.densityBy || {};
+    return driven(d, i, st.spacingMM, d.maxMM ?? st.spacingMM, d.minMM ?? st.spacingMM);
+  };
 
   if (kind === "point") {
     const rFixed = st.radiusMM > 0 ? st.radiusMM : 2;
@@ -299,19 +428,53 @@ export function buildFeature(spec, o = {}) {
     }
   } else if (kind === "line") {
     const pat = scaled(FEATURE_LINETYPES[st.linetype]?.pattern, st.linetypeScale);
-    for (const ring of (spec.rings || [])) {
-      const pts = ring.pts;
+    // ⚠️ THE ATTRIBUTE ROW IS FOUND BY THE GEOMETRY'S OWN INDEX, NEVER BY A
+    // COUNT OF WHAT HAS BEEN DRAWN. Rows are paired to rings BY ORDER, and the
+    // loop above this one skips a ring whose every point falls off the sheet —
+    // so counting drawn features shifts every row after the first drop, and a
+    // survey with one line off the edge silently draws the rest at their
+    // neighbour's width. This is the same fault as defect 1, one branch along.
+    const geoms = spec.rings || [];
+    for (let gi = 0; gi < geoms.length; gi++) {
+      const pts = geoms[gi].pts;
       let any = false;
       for (let i = 0; i < pts.length; i += 2) if (onSheet(pts[i], pts[i + 1])) { any = true; break; }
       if (!any) { dropped++; continue; }
       // ⚠️ OPEN, ALWAYS. A polyline shapefile carries paths, not rings; closing
       // one would draw a line from the end of a stream back to its source.
-      if (pat) for (const piece of dashPath(pts, false, pat)) add(piece, false);
-      else add(pts, false);
+      const w = bandWidth(gi);
+      if (w > 0) {
+        // ⚠️ A WIDE ENGRAVED LINE IS AN AREA, AND IS DRAWN AS ONE. The band's
+        // own outline goes down, then the band is filled — so the DXF, the SVG,
+        // the preview and the PNG all carry the same thing. See stroke-band.js
+        // for why a width that lived in a stroke attribute would not.
+        const band = strokeBand(pts, w, false);
+        for (const r of band) add(r.pts, true);
+        // ⚠️ FILLED BY OFFSETTING THE PATH, NOT BY SCANLINES. A scanline fill
+        // steps across whatever extent the band has in its direction — the whole
+        // length for a straight run, the whole bbox for a curve — so it hits the
+        // row cap and stripes. Offsets are parallel to the path by construction
+        // at any curvature. Measured on a ring band: 782 scanline strokes at 79%
+        // coverage, against 5 offset lines at 100%.
+        for (const q of bandFill(pts, w, fillSpacing(gi), false)) {
+          add(q, false); fillStrokes++;
+        }
+      } else if (pat) {
+        for (const piece of dashPath(pts, false, pat)) add(piece, false);
+      } else add(pts, false);
       drawn++;
     }
   } else {
-    const rings = (spec.rings || []).filter((r) => r.pts && r.pts.length >= 6);
+    // ⚠️ THE FILTER RE-INDEXES THE RINGS, AND THE ROWS DO NOT MOVE WITH IT. A
+    // degenerate ring — two points, a collapsed sliver — is dropped here, and
+    // every ring after it then sits one place earlier than its own attribute
+    // row. So each survivor carries the index it arrived with, and every
+    // attribute is read through that rather than through its position in the
+    // filtered list.
+    const rings = [];
+    (spec.rings || []).forEach((r, i) => {
+      if (r.pts && r.pts.length >= 6) rings.push({ ...r, srcIndex: i });
+    });
     if (rings.length) {
       const outers = rings.filter((r) => !r.hole);
       let any = false;
@@ -325,31 +488,58 @@ export function buildFeature(spec, o = {}) {
       else {
         if (st.outline !== false) {
           const pat = scaled(FEATURE_LINETYPES[st.linetype]?.pattern, st.linetypeScale);
-          for (const r of rings) {
-            if (pat) for (const piece of dashPath(r.pts, true, pat)) add(piece, false);
-            else add(r.pts, true);
+          const groupsForW = groupRings(rings);
+          for (const g of groupsForW) {
+            const w = bandWidth(srcOf(g));
+            for (const r of g.rings) {
+              if (w > 0) {
+                // ⚠️ THE OUTLINE ITSELF BECOMES AN AREA on the engrave pass, an
+                // annulus around the ring, filled. Same reason as a wide line:
+                // a width that lived in a stroke attribute would be in the
+                // preview, the SVG and the PNG, and absent from the DXF.
+                const band = strokeBand(r.pts, w, true);
+                for (const b of band) add(b.pts, true);
+                // ⚠️ A RING RUNS EVERY DIRECTION, so no scanline angle follows
+                // it — and `echo`, which does follow a boundary, rasterises at a
+                // cell sized from the whole polygon and cannot resolve a band
+                // 0.6 mm wide at all (measured: 0% coverage). Offsetting the ring
+                // itself is exact.
+                for (const q of bandFill(r.pts, w, fillSpacing(srcOf(g)), true)) {
+                  add(q, false); fillStrokes++;
+                }
+              } else if (pat) {
+                for (const piece of dashPath(r.pts, true, pat)) add(piece, false);
+              } else add(r.pts, true);
+            }
           }
         }
         if (st.pattern && st.pattern !== "none") {
-          // ⚠️ DENSITY FROM AN ATTRIBUTE, AND THE MAPPING IS INVERTED. What a
-          // reader sees is DENSITY, so a high value must give a TIGHT fill —
-          // meaning it maps to the SMALLEST spacing. Mapping it the obvious way
-          // round would draw the densest planting as the emptiest hatch.
-          let spacing = st.spacingMM;
-          const dBy = st.densityBy || {};
-          if (dBy.field) {
-            const v = (spec.rows && spec.rows[0]) ? spec.rows[0][dBy.field] : null;
-            if (Number.isFinite(v)) {
-              spacing = scaleValue(v, dBy.lo, dBy.hi, dBy.maxMM, dBy.minMM, "linear");
-            } else unmeasured++;
+          // ⚠️ ONE FILL PER FEATURE, NOT ONE PER LAYER. This used to fill every
+          // ring in the layer as a single region and take the spacing from
+          // `rows[0]` — so "density by an attribute" read the FIRST polygon's
+          // value and gave every other polygon the same hatch. It looked like it
+          // worked: the field picker filled, the range filled from the real
+          // data, and a bed at 5% cover came out exactly as dense as one at 95%.
+          // Measured on two squares at COVER 5 and COVER 95: nine fill strokes
+          // each.
+          //
+          // ⚠️ AND STILL NOT RING BY RING, which is the reason it was written
+          // that way. A hole has to be filled WITH its outer or the hatch runs
+          // straight across it — a pond inside a planting bed comes out planted.
+          // So the rings are grouped into features first: each outer with the
+          // holes that fall inside it, filled together, at its OWN value.
+          const groups = groupRings(rings);
+          for (const g of groups) {
+            // ⚠️ THE ROW OF THE OUTER RING, because rows are paired to rings by
+            // ORDER and a feature is named by its outer. A hole carries the same
+            // feature's attributes; taking a hole's row would work by accident
+            // and break the moment a multipart polygon appeared.
+            const spacing = fillSpacing(srcOf(g));
+            const f = fillRegion(g.rings, { pattern: st.pattern, spacing,
+              rotationDeg: st.rotationDeg, minLength: minLen, tracer: o.tracer });
+            capped = capped || f.capped;
+            for (const s of f.strokes) { add(s, false); fillStrokes++; }
           }
-          // ⚠️ FILLED AS ONE REGION, holes included, not ring by ring. Filling
-          // each ring separately would hatch straight across a hole — a pond
-          // inside a planting bed would come out planted.
-          const f = fillRegion(rings, { pattern: st.pattern, spacing,
-            rotationDeg: st.rotationDeg, minLength: minLen, tracer: o.tracer });
-          capped = capped || f.capped;
-          for (const s of f.strokes) { add(s, false); fillStrokes++; }
         }
         drawn = outers.length || rings.length;
       }

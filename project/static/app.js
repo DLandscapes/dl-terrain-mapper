@@ -33,7 +33,7 @@ import { readGML } from "./gml.js";
 import { drawingToShapefiles, zipStore } from "./shp-write.js";
 import { rasterPlan, paintEngraving, cutLinesOnly } from "./raster.js";
 import { readDBF, assertPairs, fieldRange } from "./dbf.js";
-import { FILL_PATTERNS, PATTERN_ORDER } from "./patterns.js";
+import { FILL_PATTERNS, PATTERN_ORDER, BURN_MM } from "./patterns.js";
 import { FEATURE_DEFAULTS, FEATURE_LINETYPES, LINETYPE_ORDER,
   POINT_SYMBOLS, SYMBOL_ORDER } from "./features.js";
 import { ruggedness, roughness, wetnessIndex, indexNote } from "./terrain.js";
@@ -1341,7 +1341,24 @@ function render() {
 
   for (const [layer, g] of byLayer) {
     ctx.strokeStyle = PASS[layer] || "#000";
-    ctx.lineWidth = layer === "DLF-05_cut_outer" ? 1.4 : layer === "DLF-03_score_strong" ? 1.2 : 0.85;
+    // ⚠️ THE ENGRAVE PASS IS DRAWN AT THE WIDTH IT BURNS, NOT AS A HAIRLINE.
+    // Every solid in this tool is strokes at `SOLID_MM`, the distance at which
+    // burns merge — so a hairline preview shows a scale bar, a north needle and
+    // a letter as STRIPES, and shows them getting further apart the closer you
+    // look. That is the preview lying about the material, which is the one thing
+    // this tool is built not to do. Drawn at the width a burn IS, the strokes
+    // overlap on screen exactly as they will on the bed.
+    //
+    // ⚠️ AND IT IS A FLOOR, NOT A REPLACEMENT. Zoomed out, 0.3 mm is a fraction
+    // of a pixel; below 0.85 px a line stops being visible at all, so the
+    // hairline is kept as the minimum. Only the engrave pass gets this: a score
+    // or a cut IS a path the head follows once, and drawing it wide would claim
+    // a width the machine has nowhere to put.
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = layer === "DLF-00_engrave"
+      ? Math.max(0.85, BURN_MM * state.view.k)
+      : layer === "DLF-05_cut_outer" ? 1.4 : layer === "DLF-03_score_strong" ? 1.2 : 0.85;
     ctx.globalAlpha = layer === "DLF-99_sheet" ? 0.5 : 1;
     ctx.beginPath();
     for (const p of g.paths) {
@@ -1867,6 +1884,72 @@ function suggestRange(f, field, loId, hiId) {
 }
 
 
+// ── data-defined overrides ──────────────────────────────────────────────────
+/** The bindings, and which style key each one drives. */
+const BINDINGS = [
+  { id: "ftDens", key: "densityBy" },
+  { id: "ftSize", key: "sizeBy" },
+  { id: "ftRot", key: "rotateBy" },
+  { id: "ftWidth", key: "widthBy" },
+];
+
+/**
+ * Show a binding's state: the tick, the picker, and the range it reveals.
+ *
+ * ⚠️ THE CHECKBOX IS THE TRUTH, AND THE FIELD FOLLOWS IT. Unticking clears the
+ * field rather than merely hiding it — a binding that is invisible but still
+ * driving the drawing is the same class of fault as a fold that hides a
+ * switched-on halftone. Re-ticking offers the picker again, empty.
+ */
+function syncBinding(b, f) {
+  const on = $(b.id + "On"), sel = $(b.id + "Field"), range = $(b.id + "Range");
+  if (!on || !sel) return;
+  const bound = on.checked && !!sel.value;
+  sel.disabled = !on.checked;
+  if (range) range.hidden = !bound;
+  const row = on.closest(".bindrow");
+  if (row) row.classList.toggle("bound", bound);
+  // ⚠️ A LAYER WITH NO .dbf CAN BIND NOTHING, and the control says so rather
+  // than offering an empty list that looks broken.
+  if (!f || !f.numericFields || !f.numericFields.length) {
+    on.disabled = true;
+    on.checked = false;
+    sel.disabled = true;
+    if (range) range.hidden = true;
+    if (row) row.classList.remove("bound");
+  } else on.disabled = false;
+}
+
+for (const b of BINDINGS) {
+  const on = $(b.id + "On"), sel = $(b.id + "Field");
+  if (!on || !sel) continue;
+  on.addEventListener("change", () => {
+    if (!on.checked) sel.value = "";
+    syncBinding(b, activeFeature());
+    gatherFeature(); paintLayers(); recompile();
+  });
+  sel.addEventListener("input", () => {
+    // Picking a field for the first time fills the range from the data itself.
+    const f = activeFeature();
+    if (f && sel.value) suggestRange(f, sel.value, b.id + "Lo", b.id + "Hi");
+    syncBinding(b, f);
+    gatherFeature(); paintLayers(); recompile();
+  });
+}
+
+/**
+ * ⚠️ THE CONTROLS A PASS CANNOT USE ARE ABSENT, NOT GREYED. A width on a score
+ * pass is a number the machine has nowhere to put; a greyed one invites "why
+ * not?", an absent one says the honest thing. Same rule a fill pattern already
+ * follows on a line.
+ */
+function syncPassControls(f) {
+  const box = $("ftEngraveOnly");
+  if (!box) return;
+  const engrave = !!f && f.style.pass === "DLF-00_engrave";
+  box.hidden = !engrave || f.kind === "point";
+}
+
 /** Push the selected feature layer's style into the controls. */
 function syncFeature() {
   const f = activeFeature();
@@ -1902,14 +1985,30 @@ function syncFeature() {
     $("ftRotMode").value = rb.mode || "degrees";
     $("ftRotOffset").value = String(rb.offsetDeg || 0);
   }
-  if (f.kind === "polygon") {
-    const db = st.densityBy || (st.densityBy = { ...FEATURE_DEFAULTS.polygon.densityBy });
+  // Density drives a polygon's fill AND a wide line's band fill, so it is not
+  // polygon-only any more — and this block is the ONLY one that fills those
+  // controls. It replaced a polygon-only copy of itself that ran first and set
+  // the same four boxes to the same four values.
+  if (f.kind !== "point") {
+    const db = st.densityBy || (st.densityBy = { ...FEATURE_DEFAULTS[f.kind].densityBy });
     fillAttrPicker("ftDensField", f, db.field);
     $("ftDensLo").value = String(db.lo); $("ftDensHi").value = String(db.hi);
     $("ftDensMin").value = String(db.minMM); $("ftDensMax").value = String(db.maxMM);
+    const wb = st.widthBy || (st.widthBy = { ...FEATURE_DEFAULTS[f.kind].widthBy });
+    $("ftWidth").value = String(st.widthMM ?? 0);
+    fillAttrPicker("ftWidthField", f, wb.field);
+    $("ftWidthLo").value = String(wb.lo); $("ftWidthHi").value = String(wb.hi);
+    $("ftWidthMin").value = String(wb.minMM); $("ftWidthMax").value = String(wb.maxMM);
   }
   $("ftLinetype").value = st.linetype;
   $("ftScale").value = String(st.linetypeScale);
+  // The tick follows the stored field, so a saved binding comes back ticked.
+  for (const b of BINDINGS) {
+    const on = $(b.id + "On"), sel = $(b.id + "Field");
+    if (on && sel) on.checked = !!(st[b.key] && st[b.key].field);
+    syncBinding(b, f);
+  }
+  syncPassControls(f);
   paintSwatches();
 }
 
@@ -1926,6 +2025,28 @@ function gatherFeature() {
     st.spacingMM = Math.min(20, Math.max(0.3, +$("ftSpacing").value || 2));
     st.rotationDeg = +$("ftRotation").value || 0;
     st.outline = $("ftOutline").checked;
+  }
+  if (f.kind !== "point") {
+    // ⚠️ WIDTH IS READ WHATEVER THE PASS IS, and ignored by the drawing unless
+    // the pass is engrave. Clearing it on a pass change would lose the value the
+    // moment someone looked at a score pass and came back.
+    st.widthMM = Math.max(0, +$("ftWidth").value || 0);
+    const wb = st.widthBy || (st.widthBy = { ...FEATURE_DEFAULTS[f.kind].widthBy });
+    const prevW = wb.field;
+    wb.field = $("ftWidthOn").checked ? ($("ftWidthField").value || null) : null;
+    if (wb.field && wb.field !== prevW) suggestRange(f, wb.field, "ftWidthLo", "ftWidthHi");
+    wb.lo = +$("ftWidthLo").value || 0;
+    wb.hi = +$("ftWidthHi").value || 0;
+    wb.minMM = Math.max(0.1, +$("ftWidthMin").value || 0.3);
+    wb.maxMM = Math.max(wb.minMM, +$("ftWidthMax").value || 4);
+    const db = st.densityBy || (st.densityBy = { ...FEATURE_DEFAULTS[f.kind].densityBy });
+    const prevD = db.field;
+    db.field = $("ftDensOn").checked ? ($("ftDensField").value || null) : null;
+    if (db.field && db.field !== prevD) suggestRange(f, db.field, "ftDensLo", "ftDensHi");
+    db.lo = +$("ftDensLo").value || 0;
+    db.hi = +$("ftDensHi").value || 0;
+    db.minMM = Math.max(0.1, +$("ftDensMin").value || 0.8);
+    db.maxMM = Math.max(db.minMM, +$("ftDensMax").value || 5);
   }
   if (f.kind === "point") {
     st.symbol = $("ftSymbol").value;
@@ -2249,6 +2370,7 @@ $("ftRemove").addEventListener("click", () => {
   syncFeature(); paintFeatureList(); refreshClipSources(); syncWindows(); recompile();
 });
 for (const id of ["ftPass", "ftPattern", "ftSpacing", "ftRotation", "ftOutline",
+  "ftWidth", "ftWidthLo", "ftWidthHi", "ftWidthMin", "ftWidthMax",
   "ftRadius", "ftPointFill", "ftPointSpacing", "ftLinetype", "ftScale",
   "ftSymbol", "ftSizeField", "ftSizeLo", "ftSizeHi", "ftSizeMin", "ftSizeMax",
   "ftSizeMode", "ftRotField", "ftRotMode", "ftRotOffset",
@@ -2257,6 +2379,10 @@ for (const id of ["ftPass", "ftPattern", "ftSpacing", "ftRotation", "ftOutline",
   if (el) {
     el.addEventListener("input", () => {
       gatherFeature();
+      // ⚠️ CHANGING THE PASS CHANGES WHICH CONTROLS EXIST. Width and tone are
+      // engrave-only, so the panel has to answer the moment the pass moves —
+      // otherwise a width sits on screen doing nothing on a score pass.
+      if (id === "ftPass") syncPassControls(activeFeature());
       // A field choice rewrites the range boxes, so the panel has to catch up.
       if (/Field$/.test(id)) syncFeature();
       paintFeatureList();

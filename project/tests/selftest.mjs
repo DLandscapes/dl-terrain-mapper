@@ -11,13 +11,14 @@ import { traceContours, contourLevels, niceInterval, pathLength } from "../stati
 import { textStrokes, measure, formatLevel, hasGlyph, setLettering, LETTERINGS } from "../static/stroke-font.js";
 import { DXF, DLF_LAYERS, num } from "../static/dxf.js";
 import { sheetFor, fitScale, scaleBar, SCALE_LADDER } from "../static/sheet.js";
+import { BURN_MM } from "../static/patterns.js";
 import { toSheet, labelContours } from "../static/labels.js";
 import { toUTM, fromUTM, zoneFor, zoneFromEPSG } from "../static/utm.js";
 import { readPhotoMeta, readPhotoSet } from "../static/exif.js";
 import { placePhotos, correct, markGeometry } from "../static/photos.js";
 import { symbolField, symbolLegend, signedSymbolField, strideFor, slopeDegrees, hatchCircle } from "../static/symbols.js";
 import { vectorHalftone, tripleHalftone, budget, assertExportable, CHANNELS } from "../static/halftone.js";
-import { compile, toDXF, reportText, sheetsIn } from "../static/compile.js";
+import { compile, toDXF, reportText, sheetsIn, letterInkHalf } from "../static/compile.js";
 import { inflate, lzwDecode, packbits, unpredict, unpredictFloat } from "../static/decompress.js";
 import { readTIFF, readElevation } from "../static/geotiff.js";
 import { makeExifJPEG } from "./exif-fixture.mjs";
@@ -37,6 +38,7 @@ import { readShapefile, signedArea2, readPRJ } from "../static/shapefile.js";
 import { rasterPlan, cutLinesOnly, ENGRAVE_GREY, DPI_LADDER } from "../static/raster.js";
 import { readGML, parseSRS } from "../static/gml.js";
 import { fillRegion, FILL_PATTERNS, cellRandom } from "../static/patterns.js";
+import { strokeBand, bandArea, bandFill } from "../static/stroke-band.js";
 import { buildFeature, FEATURE_LINETYPES, scaleValue, angleValue, symbolPaths,
   SYMBOL_ORDER } from "../static/features.js";
 import { readDBF, assertPairs, fieldRange } from "../static/dbf.js";
@@ -259,7 +261,11 @@ group("stroke font");
       sheet: { title: "ABCDEFG", lettering } } });
     let lo = Infinity, hi = -Infinity, top = -Infinity;
     for (const p of d2.paths) {
-      if (p.layer !== "DLF-01_score_light") continue;
+      // ⚠️ FILTERED ON THE TAG, NOT ON THE PASS. What this measures is the
+      // furniture's lettering; which pass furniture goes on is a separate
+      // decision that has already changed once (score light -> engrave), and a
+      // test that pins it makes that decision look like a regression.
+      if (p.furniture !== true) continue;
       for (let i = 0; i < p.pts.length; i += 2) {
         if (p.pts[i + 1] > d2.sheet.height * 0.7) {          // the title zone
           lo = Math.min(lo, p.pts[i]); hi = Math.max(hi, p.pts[i]);
@@ -274,8 +280,33 @@ group("stroke font");
   // ⚠️ Marc, 2026-08-24: the engraved title's gap from the top edge equals its
   // gap from the left edge — the ink tops out exactly `fx` (4 mm at margin 0)
   // below the sheet edge, not 1.8 mm as before.
+  // ⚠️ MEASURED TO THE INK, WHICH IS NOT THE GEOMETRY. A furniture path is a
+  // centreline and what lands on the material is that centreline plus half a
+  // burn — so this reads the top of the drawn letter, adds the ink the engrave
+  // pass puts around it, and asks where the MARK ends. Measuring the geometry
+  // passed at 4.000 while the ink stood at 3.850.
   ok("the title's gap from the top equals the furniture gap from the left",
-    near(fr.sheetH - fr.top, 4, 0.05));
+    near(fr.sheetH - fr.top - letterInkHalf(3.2), 4, 0.05));
+
+  // ⚠️ A LETTER SMALLER THAN THE BURN CANNOT BE GIVEN WEIGHT, AND MUST NOT BE
+  // BANDED AS IF IT COULD. A stroke on the engrave pass already inks BURN_MM
+  // wide, so banding a skeleton at the full 12% of cap height adds the burn on
+  // top of the band: a 2 mm footer asked for 0.30 mm and inked at 0.60 — 30% of
+  // cap height, which closes the counters of an 8 and an 0 and is what made the
+  // furniture read as a blob rather than as text. Below the merge distance the
+  // plain stroke IS the letter, and the ink is the weight.
+  //
+  // ⚠️ AND EVERY FURNITURE SIZE IS BELOW IT. 12% clears a 0.3 mm burn only above
+  // 2.5 mm caps; the N is 1.6, the legend 1.8, the footer 2, the title 3.2. That
+  // is the finding, not a bug: giving the SKELETON weight cannot change how the
+  // lettering reads at plate sizes. The real face needs its real outlines.
+  ok("furniture lettering is not banded at sizes where the burn is the weight",
+    letterInkHalf(1.6) === letterInkHalf(3.2)
+    && [1.6, 1.8, 2, 3.2].every((z) => letterInkHalf(z) * 2 <= 0.3001),
+    [1.6, 1.8, 2, 3.2].map((z) => `${z}->${(letterInkHalf(z) * 2).toFixed(3)}`).join(" "));
+  ok("above that size a letter does get a band, so the rule is a floor not a cap",
+    letterInkHalf(8) * 2 > 0.9 && letterInkHalf(4.9) * 2 <= 0.3001,
+    `4.9 mm -> ${(letterInkHalf(4.9) * 2).toFixed(3)}, 8 mm -> ${(letterInkHalf(8) * 2).toFixed(3)}`);
 }
 
 // ── dxf ──────────────────────────────────────────────────────────────────────
@@ -325,6 +356,56 @@ group("sheet");
   ok("a bed too small for any ladder scale returns null", fitScale(dem, 5, 5) === null);
   const bar = scaleBar(s, { target: 50 });
   ok("the scale bar is a round number of metres", [1, 2, 5, 10, 20, 25, 50, 100].includes(bar.metres));
+
+  // ⚠️ THE BAR IS THE ONE OBJECT ON THE SHEET WHOSE DIMENSIONS ARE ITS CONTENT,
+  // AND IT IS DRAWN IN INK THAT HAS WIDTH. Every solid here is strokes SOLID_MM
+  // apart burning BURN_MM wide, so a run of them reaches half a burn past its
+  // own centreline in every direction. Ringing each cell with an outline as well
+  // put that overshoot on the OUTSIDE of the geometry: a 45 mm bar inked 45.3,
+  // and the thin half inked 0.9 mm against a 1.8 mm block instead of 0.6 — the
+  // 1:3 step that IS the halfway mark read as 1:2. What is checked is the INK.
+  ok("the inked scale bar is the length and the thickness it declares", (() => {
+    const d2 = compile({ dem, sym: { contours: { enabled: false },
+      sheet: { scaleBar: true, north: false, frame: false, title: "" } } });
+    const f = d2.paths.filter((p) => p.furniture === true);
+    if (!f.length) return false;
+    // ⚠️ THE BAR, NOT THE FOOTER. The footer line sits a few millimetres above
+    // it on the same tag, so the window is taken from the bar's OWN baseline —
+    // the lowest furniture on the sheet — and is only as tall as a block.
+    let base = Infinity;
+    for (const p of f) for (let i = 1; i < p.pts.length; i += 2) base = Math.min(base, p.pts[i]);
+    const lid = base + 2.5;
+    let x0 = Infinity, x1 = -Infinity, y0 = base, y1 = -Infinity, thinTop = -Infinity;
+    for (const p of f) {
+      for (let i = 0; i < p.pts.length; i += 2) {
+        const x = p.pts[i], y = p.pts[i + 1];
+        if (y > lid) continue;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+        y1 = Math.max(y1, y);
+      }
+    }
+    if (!Number.isFinite(x0)) return false;
+    const placed = scaleBar(d2.sheet, { x: x0 + BURN_MM / 2, y: y0 + BURN_MM / 2, target: 45 });
+    // Rows sit half a burn inside the ends, so the ink spans exactly the declared
+    // length and the declared thickness.
+    const inkLen = x1 - x0 + BURN_MM, inkThick = y1 - y0 + BURN_MM;
+    // ⚠️ THE THIN HALF IS MEASURED BY THE ROWS THAT CROSS IT, NOT BY VERTICES
+    // INSIDE IT. Each row is a two-point stroke spanning the whole half, so its
+    // endpoints sit at the ends and nothing lands in the middle third.
+    for (const p of f) {
+      if (p.pts.length !== 4 || p.pts[1] > lid) continue;
+      const mid = (p.pts[0] + p.pts[2]) / 2;
+      // Past the zero riser, which is as tall as the block and as narrow as a
+      // tenth of a millimetre of bar.
+      if (mid > x0 + placed.mm * 0.05 && mid < x0 + placed.mm * 0.4) {
+        thinTop = Math.max(thinTop, p.pts[1]);
+      }
+    }
+    const inkThin = thinTop - y0 + BURN_MM;
+    return Math.abs(inkLen - placed.mm) < 0.05
+      && Math.abs(inkThick - placed.thick) < 0.05
+      && Math.abs(inkThin - placed.thick / 3) < 0.06; })(),
+    "length, block thickness and the 1:3 thin half, measured on the ink");
 }
 
 // ── labels ───────────────────────────────────────────────────────────────────
@@ -1161,6 +1242,32 @@ group("the one-drawing rule, guarded at the source");
     })());
   ok("only the export routes set forExport, so the preview can still show a restricted image",
     /forExport:\s*!!forExport/.test(src) && !/forExport:\s*true/.test(src));
+
+  // ⚠️ AND THE SAME PROPERTY FOR HOW WIDE A BURN IS DRAWN. The preview, the SVG
+  // and the PNG each decide what an engrave-pass stroke LOOKS like, and every
+  // solid this tool makes is strokes close enough to merge — so if the three
+  // disagree about that width, one shows stripes where another shows a solid,
+  // and the preview is lying again. Three renderers, one constant.
+  //
+  // Nothing in Node can observe a canvas, so this is asserted where it can be:
+  // all three must import BURN_MM, and the line where each branches on the
+  // engrave pass must name it rather than a number of its own.
+  const RENDERERS = ["../static/app.js", "../static/svg.js", "../static/raster.js"];
+  const rendererUsesBurn = (rel) => {
+    const t = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+    if (!/import\s*\{[^}]*\bBURN_MM\b[^}]*\}\s*from\s*"\.\/patterns\.js"/.test(t)) return false;
+    const lines = t.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes('"DLF-00_engrave"')) continue;
+      const window = lines.slice(i, i + 3).join(" ");
+      if (/lineWidth|stroke-width|const w =|\? Math\.max/.test(window)) {
+        if (!window.includes("BURN_MM")) return false;
+      }
+    }
+    return true;
+  };
+  ok("all three renderers take the engrave width from BURN_MM, and none from a literal",
+    RENDERERS.every(rendererUsesBurn), RENDERERS.join(" "));
 }
 
 // ── shapefile — just enough to read a boundary ───────────────────────────────
@@ -1491,10 +1598,33 @@ group("shapefile features: points, lines, areas, and 24 fills");
       if (!inBox(f.strokes)) return false;
     }
     return true; })());
-  ok("the pattern table is the Slicer's — same count, same groups", (() => {
-    const groups = new Set(Object.values(FILL_PATTERNS).map((v) => v[0]));
-    return Object.keys(FILL_PATTERNS).length === 24
-      && ["linear", "water", "paving", "scatter", "abstract"].every((g) => groups.has(g)); })());
+  // ⚠️ THE SLICER'S TWENTY-FOUR ARE ALL STILL THERE, BY NAME. The two tools
+  // share this vocabulary on purpose — a student who styles a bed in one should
+  // recognise it in the other — so the check is that none of them has been
+  // renamed, regrouped or dropped, NOT that the table has exactly 24 entries.
+  // This tool adds `solid`, which the Slicer has no use for: the Slicer cuts,
+  // and solid is a spacing that only means something on an engrave pass.
+  ok("the Slicer's 24 fills are all present, unrenamed and in their own groups", (() => {
+    const SLICER = {
+      lines: "linear", double: "linear", dashes: "linear", dashdot: "linear",
+      cross: "linear", trigrid: "linear", zigzag: "linear",
+      waves: "water", ripples: "water", scales: "water",
+      herringbone: "paving", brick: "paving", hex: "paving", diamonds: "paving",
+      dots: "scatter", rings: "scatter", stipple: "scatter", pebbles: "scatter",
+      plus: "scatter", ticks: "scatter", grass: "scatter", marsh: "scatter",
+      interference: "abstract", echo: "abstract",
+    };
+    return Object.entries(SLICER).every(([k, g]) => FILL_PATTERNS[k] && FILL_PATTERNS[k][0] === g)
+      && Object.keys(SLICER).length === 24; })());
+  // ⚠️ SOLID IS A SPACING, NOT A FLAG. It has to come out DENSER than any
+  // spacing a reader would set by hand, or "solid" arrives at the machine as
+  // stripes.
+  ok("solid fills tighter than a hand-set spacing, and reports itself as linear", (() => {
+    const solid = fillRegion(sq(), { pattern: "solid", rotationDeg: 0, minLength: 0.3, tracer });
+    const hand = fillRegion(sq(), { pattern: "lines", spacing: 2, rotationDeg: 0,
+      minLength: 0.3, tracer });
+    return FILL_PATTERNS.solid[0] === "linear"
+      && solid.strokes.length > hand.strokes.length * 3 && inBox(solid.strokes); })());
   // ⚠️ A SCATTER MUST NOT RESHUFFLE BETWEEN PREVIEW AND EXPORT.
   ok("scatter patterns are deterministic, not random", (() => {
     const a = fillRegion(sq(), { pattern: "stipple", spacing: 3, tracer });
@@ -2521,6 +2651,200 @@ group("GML — geometry, attributes and the axis-order trap");
   ok("features with no readable geometry are counted and reported, not skipped quietly",
     bad.unreadable === 1 && bad.notes.some((n) => /no geometry/.test(n)),
     JSON.stringify(bad.notes));
+}
+
+// ── data-defined overrides, and width as geometry ───────────────────────────
+group("attributes driving the drawing, and a width that becomes an area");
+{
+  const sq = (x, y, w, h = w, hole = false) =>
+    ({ pts: Float64Array.of(x, y, x + w, y, x + w, y + h, x, y + h), hole });
+  const sheet = { width: 300, height: 300 };
+  const fills = (r) => r.paths.filter((p) => !p.closed).length;
+  const within = (p, x0, x1) => {
+    for (let i = 0; i < p.length; i += 2) if (p[i] >= x0 && p[i] <= x1) return true;
+    return false;
+  };
+
+  // ⚠️ THE ATTRIBUTE HAS TO REACH EVERY FEATURE, NOT JUST THE FIRST. This read
+  // `rows[0]` and filled the whole layer as one region, so a bed at 5% cover
+  // came out exactly as dense as one at 95% — measured at nine fill strokes
+  // each. The field picker filled, the range filled from real data, and the
+  // drawing was wrong in a way nothing on screen contradicted.
+  const two = buildFeature({
+    kind: "polygon", name: "beds", rings: [sq(10, 10, 40), sq(100, 10, 40)],
+    rows: [{ COVER: 5 }, { COVER: 95 }],
+    style: { pattern: "lines", spacingMM: 2, rotationDeg: 0, outline: false,
+      densityBy: { field: "COVER", lo: 0, hi: 100, minMM: 0.8, maxMM: 5 } },
+  }, { sheet });
+  const left = two.paths.filter((p) => !p.closed && within(p.pts, 10, 50)).length;
+  const right = two.paths.filter((p) => !p.closed && within(p.pts, 100, 140)).length;
+  ok("density is read per FEATURE, not once for the layer",
+    right > left * 2, `COVER 5 -> ${left} strokes, COVER 95 -> ${right}`);
+
+  // ⚠️ AND THE HOLE IS STILL FILLED WITH ITS OWN OUTER. That is why the layer
+  // was filled as one region in the first place: hatching ring by ring runs
+  // straight across a courtyard and a pond inside a bed comes out planted.
+  const court = buildFeature({
+    kind: "polygon", name: "court", rings: [sq(10, 10, 80), sq(30, 30, 40, 40, true)],
+    rows: [{ C: 1 }, { C: 1 }],
+    style: { pattern: "lines", spacingMM: 3, rotationDeg: 0, outline: false },
+  }, { sheet });
+  ok("a hole is still respected, so a courtyard is not hatched over",
+    court.paths.filter((p) => !p.closed).every((p) => {
+      for (let i = 0; i < p.pts.length; i += 2) {
+        if (p.pts[i] > 32 && p.pts[i] < 68 && p.pts[i + 1] > 32 && p.pts[i + 1] < 68) return false;
+      }
+      return true;
+    }), `${fills(court)} fill strokes, none inside the hole`);
+
+  // ⚠️ WIDTH IS MEANINGLESS OFF THE ENGRAVE PASS. A score or a cut is a path the
+  // head follows once and its weight is the pass's power and speed; a width
+  // there is a number the machine has nowhere to put.
+  const line = { pts: Float64Array.of(10, 10, 90, 10), hole: false };
+  const scored = buildFeature({ kind: "line", name: "p", rings: [line], rows: [{ W: 3 }],
+    style: { pass: "DLF-02_score_medium", widthMM: 3, linetype: "solid" } }, { sheet });
+  ok("a width on a score pass draws a plain line, not a band",
+    scored.paths.length === 1 && !scored.paths[0].closed, `${scored.paths.length} paths`);
+
+  // ⚠️ AND ON ENGRAVE IT BECOMES GEOMETRY. Defect 7 was a circle that previewed
+  // solid and exported as an outline; a width held in a stroke attribute would
+  // repeat it — visible in the preview, the SVG and the PNG, absent from the DXF.
+  const band = buildFeature({ kind: "line", name: "p", rings: [line], rows: [{ W: 3 }],
+    style: { pass: "DLF-00_engrave", widthMM: 3, pattern: "solid", spacingMM: 0.3 } },
+  { sheet });
+  ok("on the engrave pass a wide line becomes an outlined, filled band",
+    band.paths.filter((p) => p.closed).length === 1 && fills(band) > 5
+    && band.paths.every((p) => p.layer === "DLF-00_engrave"),
+    `${band.paths.filter((p) => p.closed).length} outline, ${fills(band)} fill strokes`);
+
+  // ⚠️ AND THE WIDTH ITSELF IS PER FEATURE.
+  const wide = buildFeature({
+    kind: "line", name: "p",
+    rings: [{ pts: Float64Array.of(10, 10, 90, 10), hole: false },
+      { pts: Float64Array.of(10, 60, 90, 60), hole: false }],
+    rows: [{ W: 1 }, { W: 8 }],
+    style: { pass: "DLF-00_engrave", widthMM: 2, pattern: "solid", spacingMM: 0.3,
+      widthBy: { field: "W", lo: 0, hi: 10, minMM: 0.5, maxMM: 6 } },
+  }, { sheet });
+  const spanOf = (lo, hi) => {
+    const p = wide.paths.find((q) => q.closed
+      && (() => { for (let i = 1; i < q.pts.length; i += 2) if (q.pts[i] > lo && q.pts[i] < hi) return true; return false; })());
+    let a = Infinity, b = -Infinity;
+    for (let i = 1; i < p.pts.length; i += 2) { a = Math.min(a, p.pts[i]); b = Math.max(b, p.pts[i]); }
+    return b - a;
+  };
+  const thin = spanOf(5, 20), thick = spanOf(55, 70);
+  ok("the band's width comes from the attribute, feature by feature",
+    Math.abs(thin - 1.05) < 0.3 && Math.abs(thick - 4.9) < 0.3,
+    `W=1 -> ${thin.toFixed(2)} mm, W=8 -> ${thick.toFixed(2)} mm`);
+
+  // ⚠️ A BAND IS AN AREA, and its area is what the arithmetic says.
+  ok("a straight band's area is length x width, and a ring's is perimeter x width",
+    Math.abs(bandArea(strokeBand([0, 0, 100, 0], 2, false)) - 200) < 0.01
+    && Math.abs(bandArea(strokeBand([0, 0, 100, 0, 100, 100, 0, 100], 2, true)) - 800) < 8);
+  ok("a reversed ring gives the same band, so winding cannot invert it",
+    Math.abs(bandArea(strokeBand([0, 0, 0, 100, 100, 100, 100, 0], 2, true))
+      - bandArea(strokeBand([0, 0, 100, 0, 100, 100, 0, 100], 2, true))) < 0.5);
+  // ⚠️ A MITRE AT A SHARP CORNER RUNS AWAY TO INFINITY. A 1 mm band at a 5°
+  // corner puts the point 23 mm off the line — burn time somewhere the drawing
+  // does not go — so past the limit it bevels.
+  // ⚠️ THE ROW CAP USED TO COUNT ROWS ACROSS THE DIAGONAL. A 2 mm band 800 mm
+  // long has a 400 mm half-diagonal, so the cap believed it was about to draw
+  // 2,667 rows when the band holds seven — and coarsened the spacing until ONE
+  // was left. A wide engraved line came out as a hairline, and the warning
+  // blamed the spacing. Rows step across the SHORT axis; that is what is capped.
+  ok("a band's fill does not thin out as the band gets longer", (() => {
+    const at = (L) => fillRegion(strokeBand([0, 0, L, 0], 2, false),
+      { pattern: "solid", rotationDeg: 0, minLength: 0.2 }).strokes.length;
+    const n = at(20);
+    return n >= 5 && [100, 400, 800, 2000].every((L) => at(L) === n); })(),
+    [20, 100, 400, 800, 2000].map((L) => fillRegion(strokeBand([0, 0, L, 0], 2, false),
+      { pattern: "solid", rotationDeg: 0, minLength: 0.2 }).strokes.length).join(" "));
+  // ⚠️ AND THE CAP STILL FIRES WHERE IT IS MEANT TO. It exists so a fine spacing
+  // over a large area cannot hang the browser; removing its teeth would trade
+  // one silent failure for a worse one.
+  ok("a large area at a fine spacing is still capped, and says so", (() => {
+    const big = [{ pts: Float64Array.of(0, 0, 500, 0, 500, 500, 0, 500), hole: false }];
+    const f = fillRegion(big, { pattern: "solid", rotationDeg: 0, minLength: 0.2 });
+    return f.capped && f.strokes.length < 450; })());
+  // ⚠️ A BAND IS FILLED BY OFFSETTING IT, NOT BY SCANLINES. Straight scanlines
+  // step across whatever extent the band has in their direction — for a RING
+  // that is the whole polygon — so the row cap fires and the band stripes.
+  // Measured on a 1.5 mm band round a 200x150 polygon: 782 scanline strokes at
+  // 79% coverage, against 5 offset lines at 100%. And `echo`, which does follow
+  // a boundary, rasterises at a cell sized from the whole region and cannot
+  // resolve a 0.6 mm band at all — 0% coverage.
+  ok("a ring band fills completely, and with lines rather than hundreds of strokes", (() => {
+    const ring = [0, 0, 200, 0, 200, 150, 0, 150];
+    const at = (w) => {
+      const area = bandArea(strokeBand(ring, w, true));
+      const f = bandFill(ring, w, 0.3, true);
+      let ink = 0;
+      for (const q of f) for (let i = 2; i < q.length; i += 2) {
+        ink += Math.hypot(q[i] - q[i - 2], q[i + 1] - q[i - 1]);
+      }
+      return { lines: f.length, cover: ink * 0.3 / area };
+    };
+    const a = at(1.5), b = at(3);
+    return a.lines <= 8 && a.cover > 0.98 && b.lines <= 12 && b.cover > 0.98; })(),
+    JSON.stringify([1.5, 3].map((w) => bandFill([0, 0, 200, 0, 200, 150, 0, 150], w, 0.3, true).length)));
+
+  // ⚠️ THE LINE COUNT IS floor(width / spacing), and cannot be otherwise. A band
+  // 0.4 mm wide filled at 0.3 mm gets ONE line: a second would overlap the
+  // first, and an overlap is a double burn. The shortfall is sub-spacing, and
+  // real kerf closes it.
+  ok("the fill line count follows width and spacing, and never overlaps", (() => {
+    for (const [w, sp, want] of [[0.4, 0.3, 1], [0.6, 0.3, 2], [1.5, 0.3, 5], [3, 0.3, 10],
+      [2, 0.5, 4], [0.2, 0.3, 1]]) {
+      if (bandFill([0, 0, 100, 0], w, sp, false).length !== want) return false;
+    }
+    return true; })());
+  ok("a hairpin bevels instead of throwing a spike", (() => {
+    let far = 0;
+    for (const r of strokeBand([0, 0, 100, 0, 0, 0.5], 2, false)) {
+      for (let i = 0; i < r.pts.length; i += 2) far = Math.max(far, Math.abs(r.pts[i]));
+    }
+    return far < 110; })());
+
+  // ⚠️ A DROPPED FEATURE MUST NOT SHIFT EVERY ROW AFTER IT. Rows are paired to
+  // geometry BY ORDER; the line branch was asking for the row of "however many
+  // have been drawn so far", which is the same number only until something is
+  // skipped. One line off the edge of the sheet and every remaining line took
+  // its neighbour's width — plausible output, no warning, and nothing on screen
+  // to contradict it. This is defect 1 again, one branch along.
+  ok("a line that falls off the sheet does not shift the rows of the ones after it", (() => {
+    const away = { pts: Float64Array.of(-900, -900, -800, -900), hole: false };
+    const here = { pts: Float64Array.of(10, 60, 90, 60), hole: false };
+    const style = { pass: "DLF-00_engrave", widthMM: 2, pattern: "solid", spacingMM: 0.3,
+      widthBy: { field: "W", lo: 0, hi: 10, minMM: 0.5, maxMM: 6 } };
+    const spanY = (r) => {
+      const q = r.paths.find((z) => z.closed);
+      let a = Infinity, b = -Infinity;
+      for (let i = 1; i < q.pts.length; i += 2) { a = Math.min(a, q.pts[i]); b = Math.max(b, q.pts[i]); }
+      return b - a;
+    };
+    // The same line, the same row: once on its own, once behind a dropped one.
+    const alone = buildFeature({ kind: "line", name: "p", rings: [here],
+      rows: [{ W: 8 }], style }, { sheet });
+    const behind = buildFeature({ kind: "line", name: "p", rings: [away, here],
+      rows: [{ W: 1 }, { W: 8 }], style }, { sheet });
+    return behind.report.dropped === 1 && Math.abs(spanY(alone) - spanY(behind)) < 0.01; })(),
+    "the surviving line keeps its own row");
+
+  // ⚠️ AND NEITHER MUST A RING THE FILTER THREW AWAY. A degenerate ring — two
+  // points, a collapsed sliver — is dropped before the rings are grouped, and
+  // the rows do not move with it, so every polygon after it read the row before
+  // its own.
+  ok("a degenerate ring does not shift the rows of the polygons after it", (() => {
+    const runt = { pts: Float64Array.of(5, 5, 6, 5), hole: false };     // 4 numbers: dropped
+    const style = { pattern: "lines", spacingMM: 2, rotationDeg: 0, outline: false,
+      densityBy: { field: "COVER", lo: 0, hi: 100, minMM: 0.8, maxMM: 5 } };
+    const alone = buildFeature({ kind: "polygon", name: "b", rings: [sq(100, 10, 40)],
+      rows: [{ COVER: 95 }], style }, { sheet });
+    const behind = buildFeature({ kind: "polygon", name: "b", rings: [runt, sq(100, 10, 40)],
+      rows: [{ COVER: 5 }, { COVER: 95 }], style }, { sheet });
+    return fills(alone) > 10 && fills(alone) === fills(behind); })(),
+    "the surviving polygon keeps its own row");
 }
 
 // ── result ───────────────────────────────────────────────────────────────────

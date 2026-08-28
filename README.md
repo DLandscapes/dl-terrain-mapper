@@ -161,7 +161,7 @@ Two things worth saying out loud to a class:
 start.bat test
 ```
 
-357 checks over the engine, the readers and the writers. Each one asserts
+472 checks over the engine, the readers and the writers. Each one asserts
 something that, if it broke, would be discovered on material rather than on
 screen. They depend on nothing outside this repository.
 

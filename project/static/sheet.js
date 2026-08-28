@@ -93,13 +93,23 @@ export function fitScale(dem, bedW, bedH, o = {}) {
 }
 
 /**
- * A scale bar, as stroke paths, in sheet mm.
+ * A scale bar, in sheet mm: a thin run, then a solid block.
  *
- * The bar is a round number of ground metres from the 1-2-5 series, because the
- * point of it is to be counted along rather than measured.
+ * ⚠️ PORTED FROM DL-TerrainDiversity's figure sheet, proportions and all, so the
+ * family draws one scale bar and not two. Its own note explains the design and
+ * it holds here: the first half is a thin strip, the second half a solid block
+ * on the same baseline, with a short riser marking zero. No ticks and no
+ * intermediate numbers — THE THICKNESS CHANGE IS THE HALFWAY MARK, and with
+ * lengths from the 1-2-5 series half is always a round number anyway.
+ *
+ * ⚠️ EVERYTHING IS RETURNED AS RINGS, NOT AS BLACK. Nothing in this tool is
+ * filled by being declared filled — defect 7 — so the bar is three closed rings
+ * and the caller fills them with the same geometry as everything else.
+ *
  * @param {Sheet} sheet
- * @param {{x?:number, y?:number, target?:number}} [o] `target` mm, the wanted length
- * @returns {{paths:number[][], metres:number, mm:number}}
+ * @param {{x?:number, y?:number, target?:number}} [o]
+ * @returns {{paths:number[][], rings:number[][], metres:number, mm:number,
+ *            thick:number}}
  */
 export function scaleBar(sheet, o = {}) {
   const target = o.target ?? 50;
@@ -109,29 +119,65 @@ export function scaleBar(sheet, o = {}) {
   const metres = (n <= 1.5 ? 1 : n <= 3.5 ? 2 : n <= 7.5 ? 5 : 10) * mag;
   const mm = metres * sheet.mmPerUnit;
   const x = o.x ?? sheet.margin, y = o.y ?? sheet.margin / 2;
-  const t = 1.6;
-  const paths = [
-    [x, y, x + mm, y],
-    [x, y - t, x, y + t],
-    [x + mm, y - t, x + mm, y + t],
-    [x + mm / 2, y - t, x + mm / 2, y + t],
-  ];
-  return { paths, metres, mm };
+
+  // The sibling's 6 and 2 at figure scale, as a ratio: the thin run is a third
+  // of the block, and the riser is the block's height.
+  const THICK = 1.8, THIN = THICK / 3, RISER = 0.45;
+  const half = mm / 2;
+  const box = (x0, y0, w, h) => [x0, y0, x0 + w, y0, x0 + w, y0 + h, x0, y0 + h];
+
+  return {
+    paths: [],
+    rings: [
+      box(x, y, RISER, THICK),                 // zero riser
+      box(x, y, half, THIN),                   // thin first half
+      box(x + half, y, mm - half, THICK),      // solid second half
+    ],
+    metres, mm, thick: THICK,
+  };
 }
 
 /**
- * A north point: a line with an open arrow head, pointing up the sheet.
+ * A north point: a tapered needle in a hairline ring.
+ *
+ * ⚠️ ALSO PORTED FROM THE SIBLING, and its reasoning is worth keeping whole:
+ * the ring is drawn lighter than the needle so it sits behind it rather than
+ * competing; the needle is a TAPERED lozenge — wide at the pivot, pointed at the
+ * rim — because a constant-width bar reads as a tally mark and the taper is what
+ * makes it read as an instrument; and the pivot is a small filled dot, which is
+ * what stops the shape looking like it is falling out of the bottom of the
+ * circle.
  *
  * ⚠️ UP THE SHEET IS NORTH BECAUSE NOTHING HERE ROTATES THE GROUND. If a future
  * version lets the plan be turned on the bed to nest better, this function must
  * take that angle — a north point that lies is worse than none.
- * @param {{x:number, y:number, size?:number}} o
- * @returns {number[][]}
+ *
+ * @param {{x:number, y:number, size?:number}} o `size` is the ring's RADIUS
+ * @returns {{paths:number[][], rings:number[][], labelY:number, r:number}}
  */
 export function northPoint(o) {
-  const s = o.size ?? 10, x = o.x, y = o.y;
-  return [
-    [x, y, x, y + s],
-    [x - s * 0.22, y + s * 0.7, x, y + s, x + s * 0.22, y + s * 0.7],
-  ];
+  const r = o.size ?? 5, x = o.x, y = o.y;
+  const seg = 32;
+  const circle = (cx, cy, rad) => {
+    const p = [];
+    for (let k = 0; k < seg; k++) {
+      const a = (2 * Math.PI * k) / seg;
+      p.push(cx + rad * Math.cos(a), cy + rad * Math.sin(a));
+    }
+    return p;
+  };
+  // The sibling's 19 px ring with its needle at 4.5 / 5.5 / 2.6 and a 1.6 pivot,
+  // kept as ratios so the point is the same drawing at any plate size.
+  const tip = y + r - r * 0.237;
+  const tail = y - r * 0.289;
+  const halfW = r * 0.137;
+  return {
+    paths: [circle(x, y, r)],                       // the ring: a hairline
+    rings: [
+      [x, tip, x + halfW, tail, x - halfW, tail],   // the tapered needle
+      circle(x, y - r * 0.158, r * 0.084),          // the pivot dot
+    ],
+    labelY: y + r + r * 0.32,                       // where the N sits
+    r,
+  };
 }

@@ -273,6 +273,33 @@ details.panel[open] > summary .sec-badge { display: none; }
 .pass i { width: 14px; height: 3px; border-radius: 2px; flex: none; }
 .pass b { color: var(--ink); font-family: var(--font-head); font-variant-numeric: tabular-nums; }
 
+
+/* ── data-defined overrides ───────────────────────────────────────────────
+   ⚠️ THE BINDING SITS BESIDE THE PARAMETER IT DRIVES, not in a section of its
+   own. Three of these grew as separate folds called "Size by an attribute",
+   "Turn by an attribute", "Density by an attribute" — so the control and the
+   thing it controlled were never on screen together, and which parameter a fold
+   drove had to be read from its title. A checkbox and a picker under the value
+   say it without a heading. */
+.bindrow { display: flex; flex-direction: column; gap: 3px; }
+.bindtoggle {
+  display: flex; align-items: center; gap: 6px;
+  font-size: .68rem; color: var(--ink-soft); cursor: pointer; padding-left: 1px;
+}
+.bindtoggle input[type="checkbox"] { flex: none; margin: 0; }
+.bindtoggle .bindlabel { flex: none; }
+.bindtoggle select { flex: 1; min-width: 0; font-size: .7rem; padding: 1px 4px; }
+.bindtoggle select[disabled] { opacity: .45; }
+/* Bound is a state worth seeing at a glance: the value above is no longer the
+   one being used. */
+.bindrow.bound .bindtoggle { color: var(--ink); }
+.bindrow.bound > .field > input { opacity: .5; }
+.bindrange {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px;
+  margin: 2px 0 4px 18px; padding-left: 8px; border-left: 1px solid var(--line);
+}
+.bindrange .field { gap: 2px; }
+
 /* ── viewport furniture ──────────────────────────────────────────────────── */
 /* ⚠️ THE VIEWPORT'S OWN CONTROLS, IN ONE ROW, CLEAR OF BOTH WINDOWS.
    `--tools-gap` is the distance kept from the readout window's left edge, and
@@ -530,14 +557,13 @@ body.dropping #viewport::after {
         same voice. Every style is the same single-stroke skeleton, reshaped: an outline font
         from the system would make the laser cut round the ink and drop the counters of an
         8 out as dust, so there is deliberately no such option.</p>
-      <details class="sub">
-        <summary class="subhead">Furniture</summary>
-        <div class="sub-body">
-        <label class="check"><input type="checkbox" id="sFrame" checked> Cut the sheet outline</label>
-        <label class="check"><input type="checkbox" id="sBar" checked> Scale bar</label>
-        <label class="check"><input type="checkbox" id="sNorth" checked> North point</label>
-        </div>
-      </details>
+      <!-- ⚠️ NOT A FOLD. Three checkboxes behind a heading called "Furniture" —
+           a word for the things on a drawing that are not the drawing — is a
+           word to learn and a click to make, for three switches that fit on
+           three lines. -->
+      <label class="check"><input type="checkbox" id="sFrame" checked> Cut the sheet outline</label>
+      <label class="check"><input type="checkbox" id="sBar" checked> Scale bar</label>
+      <label class="check"><input type="checkbox" id="sNorth" checked> North point</label>
     </div>
   </details>
 
@@ -680,7 +706,7 @@ body.dropping #viewport::after {
       <details class="sub">
         <summary class="subhead">Laser passes</summary>
         <div class="sub-body">
-        <div class="pass"><i style="background:#000"></i><b>0</b> engrave — halftone</div>
+        <div class="pass"><i style="background:#000"></i><b>0</b> engrave — halftone, furniture</div>
         <div class="pass"><i style="background:#00f"></i><b>1</b> score light — labels, numbers</div>
         <div class="pass"><i style="background:#00a000"></i><b>2</b> score medium — contours, bearings</div>
         <div class="pass"><i style="background:#00a0a0"></i><b>3</b> score strong — index contours</div>
@@ -1064,6 +1090,40 @@ body.dropping #viewport::after {
     <div id="featStyle" hidden>
       <label class="field"><span>Draw on pass</span><select id="ftPass"></select></label>
 
+      <!-- ⚠️ SHOWN ONLY WHEN THE PASS IS ENGRAVE. A width and a tone are real
+           there and nowhere else: engrave is the one RASTER operation, where the
+           head sweeps a field. On a score or a cut, weight is the power and speed
+           of the pass and a width would be a number the machine cannot use — so
+           the controls are ABSENT rather than greyed, the same rule a fill
+           pattern follows on a line. -->
+      <div id="ftEngraveOnly" hidden>
+        <div class="bindrow">
+          <label class="field"><span>Line width (mm)</span>
+            <input type="number" id="ftWidth" min="0" max="20" step="0.1" value="0"></label>
+          <label class="bindtoggle" title="A wide engraved line is drawn as the AREA it covers, then filled — so the DXF carries it too">
+            <input type="checkbox" id="ftWidthOn">
+            <span class="bindlabel">by an attribute</span>
+            <select id="ftWidthField"></select>
+          </label>
+          <div class="bindrange" id="ftWidthRange" hidden>
+            <label class="field"><span>From</span>
+              <input type="number" id="ftWidthLo" step="any" value="0"></label>
+            <label class="field"><span>To</span>
+              <input type="number" id="ftWidthHi" step="any" value="0"></label>
+            <label class="field"><span>Thinnest (mm)</span>
+              <input type="number" id="ftWidthMin" min="0.1" step="0.1" value="0.3"></label>
+            <label class="field"><span>Thickest (mm)</span>
+              <input type="number" id="ftWidthMax" min="0.2" step="0.1" value="4"></label>
+          </div>
+        </div>
+        <p class="why">⚠️ Width becomes <b>geometry</b>: the band the line covers is outlined and
+          filled, so the DXF, the SVG, the preview and the PNG all carry it. A width that lived
+          in a stroke attribute would show in three of those and vanish from the fourth — which
+          is exactly how a circle once previewed solid and exported as an outline.
+          ⚠️ Every band is filled, so a wide line multiplies the mark count; the cutting report
+          says how far it went.</p>
+      </div>
+
       <div id="ftAreaOnly">
         <label class="field"><span>Fill pattern</span><select id="ftPattern"></select></label>
         <label class="field"><span>Fill spacing (mm)</span>
@@ -1073,23 +1133,23 @@ body.dropping #viewport::after {
         <label class="check"><input type="checkbox" id="ftOutline" checked>
           Draw the outline too</label>
 
-        <details class="sub">
-          <summary class="subhead">Density by an attribute</summary>
-          <div class="sub-body">
-          <p class="why">⚠️ Inverted on purpose: a <b>high</b> value gives a <b>tighter</b>
-            fill, because density is what a reader sees. Mapped the obvious way round, the
-            densest planting would come out as the emptiest hatch.</p>
-          <label class="field"><span>Field</span><select id="ftDensField"></select></label>
-          <label class="field"><span>From</span>
-            <input type="number" id="ftDensLo" step="any" value="0"></label>
-          <label class="field"><span>To</span>
-            <input type="number" id="ftDensHi" step="any" value="0"></label>
-          <label class="field"><span>Tightest (mm)</span>
-            <input type="number" id="ftDensMin" min="0.3" step="0.1" value="0.8"></label>
-          <label class="field"><span>Loosest (mm)</span>
-            <input type="number" id="ftDensMax" min="0.4" step="0.1" value="5"></label>
+        <div class="bindrow">
+          <label class="bindtoggle" title="A high value gives a TIGHTER fill — density is what a reader sees">
+            <input type="checkbox" id="ftDensOn">
+            <span class="bindlabel">by an attribute</span>
+            <select id="ftDensField"></select>
+          </label>
+          <div class="bindrange" id="ftDensRange" hidden>
+            <label class="field"><span>From</span>
+              <input type="number" id="ftDensLo" step="any" value="0"></label>
+            <label class="field"><span>To</span>
+              <input type="number" id="ftDensHi" step="any" value="0"></label>
+            <label class="field"><span>Tightest (mm)</span>
+              <input type="number" id="ftDensMin" min="0.3" step="0.1" value="0.8"></label>
+            <label class="field"><span>Loosest (mm)</span>
+              <input type="number" id="ftDensMax" min="0.4" step="0.1" value="5"></label>
           </div>
-        </details>
+        </div>
       </div>
 
       <div id="ftPointOnly">
@@ -1097,54 +1157,44 @@ body.dropping #viewport::after {
         <label class="field"><span>Symbol radius (mm)</span>
           <input type="number" id="ftRadius" min="0.3" max="30" step="0.1" value="2"></label>
 
-        <details class="sub">
-          <summary class="subhead">Size by an attribute</summary>
-          <div class="sub-body">
-          <p class="why">Pick a numeric column from the .dbf and the symbol grows with it.
-            ⚠️ Scaled by <b>area</b>, not radius: a circle of twice the radius covers four
-            times the paper, so scaling the radius directly makes every large value look
-            several times bigger than it is.</p>
-          <label class="field"><span>Field</span><select id="ftSizeField"></select></label>
-          <label class="field"><span>From</span>
-            <input type="number" id="ftSizeLo" step="any" value="0"></label>
-          <label class="field"><span>To</span>
-            <input type="number" id="ftSizeHi" step="any" value="0"></label>
-          <label class="field"><span>Smallest (mm)</span>
-            <input type="number" id="ftSizeMin" min="0.2" step="0.1" value="1.2"></label>
-          <label class="field"><span>Largest (mm)</span>
-            <input type="number" id="ftSizeMax" min="0.3" step="0.1" value="5"></label>
-          <label class="field"><span>Scaling</span>
-            <select id="ftSizeMode">
-              <option value="area">Area — honest for quantities</option>
-              <option value="linear">Radius — the Hadseløya convention</option>
-            </select></label>
-          <p class="why">Set <b>From</b> to 0 for true proportionality, where a value of
-            nothing is a symbol of nothing. Otherwise the range is graded between the two
-            sizes.</p>
-
+        <div class="bindrow">
+          <label class="bindtoggle" title="Scaled by AREA, not radius — a circle of twice the radius covers four times the paper">
+            <input type="checkbox" id="ftSizeOn">
+            <span class="bindlabel">by an attribute</span>
+            <select id="ftSizeField"></select>
+          </label>
+          <div class="bindrange" id="ftSizeRange" hidden>
+            <label class="field"><span>From</span>
+              <input type="number" id="ftSizeLo" step="any" value="0"></label>
+            <label class="field"><span>To</span>
+              <input type="number" id="ftSizeHi" step="any" value="0"></label>
+            <label class="field"><span>Smallest (mm)</span>
+              <input type="number" id="ftSizeMin" min="0.2" step="0.1" value="1.2"></label>
+            <label class="field"><span>Largest (mm)</span>
+              <input type="number" id="ftSizeMax" min="0.3" step="0.1" value="5"></label>
           </div>
-        </details>
-        <details class="sub">
-          <summary class="subhead">Turn by an attribute</summary>
-          <div class="sub-body">
-          <p class="why">⚠️ Only the directional symbols show it — turning a circle is a null
-            operation. A field already in <b>degrees</b> (an aspect, a bearing) is used as is,
-            clockwise from north; any other field has no angular meaning, so its range is
-            spread over a full turn and the result is a pattern rather than a direction.</p>
-          <label class="field"><span>Field</span><select id="ftRotField"></select></label>
-          <label class="field"><span>Read as</span>
-            <select id="ftRotMode">
-              <option value="degrees">Degrees, clockwise from north</option>
-              <option value="range">Its range, spread over a full turn</option>
-            </select></label>
-          <label class="field"><span>Offset (°)</span>
-            <input type="number" id="ftRotOffset" step="5" value="0"></label>
-          <label class="field"><span>Inside the symbol</span>
-            <select id="ftPointFill"></select></label>
-          <label class="field"><span>Inside spacing (mm)</span>
-            <input type="number" id="ftPointSpacing" min="0.2" max="10" step="0.1" value="1"></label>
+        </div>
+        <label class="field"><span>Scaling</span>
+          <select id="ftSizeMode">
+            <option value="area">Area — honest for quantities</option>
+            <option value="linear">Radius — the Hadseløya convention</option>
+          </select></label>
+        <div class="bindrow">
+          <label class="bindtoggle" title="Only the directional symbols show it — turning a circle is a null operation">
+            <input type="checkbox" id="ftRotOn">
+            <span class="bindlabel">turn by an attribute</span>
+            <select id="ftRotField"></select>
+          </label>
+          <div class="bindrange" id="ftRotRange" hidden>
+            <label class="field"><span>Offset (°)</span>
+              <input type="number" id="ftRotOffset" step="1" value="0"></label>
           </div>
-        </details>
+        </div>
+        <label class="field"><span>Read as</span>
+          <select id="ftRotMode">
+            <option value="degrees">Degrees, clockwise from north</option>
+            <option value="range">Its range, spread over a full turn</option>
+          </select></label>
       </div>
 
       <label class="field"><span>Line style</span><select id="ftLinetype"></select></label>

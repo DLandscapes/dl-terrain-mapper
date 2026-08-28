@@ -20,8 +20,18 @@
 // weight of a line is the power and speed of its pass; the width here exists so
 // the file is visible when opened. Cutters that read SVG generally treat any
 // stroke as a path to follow, so the value is deliberately small and stated.
+//
+// ⚠️ WITH ONE EXCEPTION, AND IT IS NOT AN EXCEPTION TO THAT RULE. The ENGRAVE
+// pass is the one raster operation — the head sweeps a field — and every solid
+// this tool draws is strokes spaced `SOLID_MM` apart, the distance at which the
+// burns merge. Drawing those as hairlines shows a filled scale bar, a north
+// needle and a letter as a set of separate stripes, which is not what comes off
+// the machine. So engrave-pass paths are stroked at `BURN_MM`, the width one of
+// those burns actually is: still not a weight the cutter reads, still only
+// visibility, but now visible as the thing it will be.
 
 import { PASS_COLOURS, DLF_LAYERS, SHEET_LAYER } from "./dxf.js";
+import { BURN_MM } from "./patterns.js";
 
 /** Six decimals, never an exponent — same rule the DXF writer keeps. */
 function num(v) {
@@ -95,8 +105,10 @@ export function toSVG(drawing, o = {}) {
     // The sheet boundary is not an operation; it is shown dashed and faint so
     // nobody mistakes it for something the machine will follow.
     const isBoundary = name === SHEET_LAYER[0];
+    // The engrave pass is drawn at the width it burns — see the note at the top.
+    const w = name === "DLF-00_engrave" ? Math.max(stroke, BURN_MM) : stroke;
     out.push(`  <g id="${esc(name)}" fill="none" stroke="${colour}"`
-      + ` stroke-width="${num(stroke)}" stroke-linecap="round" stroke-linejoin="round"`
+      + ` stroke-width="${num(w)}" stroke-linecap="round" stroke-linejoin="round"`
       + (isBoundary ? ` stroke-dasharray="2 2" opacity="0.5"` : "") + `>`);
     for (const p of b.paths) {
       const pts = p.pts;

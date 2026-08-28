@@ -12,7 +12,7 @@ rem --port it takes the first free one from 8990 upward and opens the browser
 rem itself, so a stale window still holding the port cannot stop it starting.
 rem
 rem   start.bat                      the tool
-rem   start.bat test                 the check suite, 126 checks (needs Node)
+rem   start.bat test                 the check suite, 472 checks (needs Node)
 rem   start.bat --port 9100          bind that port exactly, or fail
 rem   start.bat --no-browser
 rem

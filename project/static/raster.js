@@ -28,6 +28,8 @@
 // this family's records yet. When the SP500 coupon is read, this table is one
 // of the things it settles.
 
+import { BURN_MM } from "./patterns.js";
+
 /** Ink for each pass when the drawing is flattened to one engraved image. */
 export const ENGRAVE_GREY = {
   "DLF-00_engrave": 0.35,
@@ -196,6 +198,12 @@ export function paintEngraving(ctx, d, plan, o = {}) {
     const ink = `rgb(${v},${v},${v})`;
     ctx.strokeStyle = ink;
     ctx.fillStyle = ink;
+    // ⚠️ THE ENGRAVE PASS IS NEVER THINNER THAN THE MERGE DISTANCE. Every solid
+    // in this tool is strokes `SOLID_MM` apart; drawing them narrower than that
+    // spacing puts white gaps into a field that comes off the bed black, and the
+    // picture is meant to be what the machine makes. The control still widens
+    // the pass, it just cannot make it lie thinner.
+    ctx.lineWidth = layer === "DLF-00_engrave" ? Math.max(strokeMM, BURN_MM) : strokeMM;
     if (g.paths.length) {
       ctx.beginPath();
       for (const p of g.paths) {
