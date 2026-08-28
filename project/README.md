@@ -81,7 +81,7 @@ moves.
 | `halftone.js` | an image as marks: vector halftone, triple halftone, or raster engrave |
 | `dxf.js` | R12 ASCII, no exponents, the six DLF pass layers |
 | `linestyle.js` | dash patterns cut into the geometry — never a DXF LINETYPE |
-| `qgis.js` · `xml.js` | `.qml`/`.sld` translated into passes and patterns, with a decision log |
+| `xml.js` | a hand-written XML reader, kept because GML depends on it |
 | `compile.js` | the symbology → operation mapping |
 
 ## The four things worth knowing before changing anything
