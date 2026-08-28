@@ -106,10 +106,16 @@ export function fitScale(dem, bedW, bedH, o = {}) {
  * filled by being declared filled — defect 7 — so the bar is three closed rings
  * and the caller fills them with the same geometry as everything else.
  *
+ * ⚠️ IT CARRIES ITS OWN LABEL TEXT, and the label is UPPERCASE because that is
+ * what will be drawn. The single-stroke face has one case — `textStrokes()` falls
+ * back to the capital for any lowercase letter — so returning "10 m" would
+ * describe something the plate cannot show. Kilometres appear above 1,000 m,
+ * because "5000 M" on a site plan is a number to count zeros in.
+ *
  * @param {Sheet} sheet
  * @param {{x?:number, y?:number, target?:number}} [o]
  * @returns {{paths:number[][], rings:number[][], metres:number, mm:number,
- *            thick:number}}
+ *            thick:number, label:string}}
  */
 export function scaleBar(sheet, o = {}) {
   const target = o.target ?? 50;
@@ -134,6 +140,9 @@ export function scaleBar(sheet, o = {}) {
       box(x + half, y, mm - half, THICK),      // solid second half
     ],
     metres, mm, thick: THICK,
+    label: metres >= 1000
+      ? `${+(metres / 1000).toFixed(metres % 1000 ? 1 : 0)} KM`
+      : `${metres} M`,
   };
 }
 

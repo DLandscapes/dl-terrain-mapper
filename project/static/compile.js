@@ -1024,7 +1024,21 @@ export function compile(input) {
   const fits = (x, y) => !clipRings || pointInRings(x, y, clipRings);
   const fx = fbox.x0 + Math.max(M, 4);             // left edge of the furniture
   const fBar = fbox.y0 + Math.max(M * 0.42, 4);
-  const fText = fbox.y0 + Math.max(M * 0.62, 7.4);
+  // ⚠️ NOT A CONSTANT ANY MORE: the bar's end labels sit between the bar and the
+  // footer, so when they are drawn the footer has to move up out of their way.
+  // Raised below, from `fBar` and NOT from the bar's placed y — the footer is
+  // positioned as `barAt.y + (fText - fBar)`, so this has to stay the nominal
+  // offset or a bar that `seek()` moved would drag its caption twice as far.
+  let fText = fbox.y0 + Math.max(M * 0.62, 7.4);
+  // The end labels: the halftone legend's size.
+  //
+  // ⚠️ THE TWO GAPS ARE NOT EQUAL, AND THAT IS THE WHOLE POINT. The sibling's bar
+  // stands alone, so it can afford an airy gap under its labels; ours has the
+  // footer line above it as well. Set both gaps the same and the labels sit
+  // exactly between the two, belonging to neither — three evenly spaced rows of
+  // text where there should be ONE object with a caption above it. The labels
+  // hug the bar; the footer keeps its distance.
+  const BAR_LABEL = 1.8, BAR_GAP = 0.6, FOOT_GAP = 1.8;
   const fNorth = fbox.y0 + Math.max(M * 0.25, 3);
   const furnitureDropped = [];
 
@@ -1100,7 +1114,37 @@ export function compile(input) {
       for (const ring of placed.rings) {
         for (const q of solidFill(ring)) addFurniture(q, OPERATIONS.furniture);
       }
-      foot.push(`${bar.metres} M  1:${sym.sheet.scale}`);
+      // ⚠️ "0" AT ONE END AND THE LENGTH AT THE OTHER, which is how the sibling's
+      // bar is labelled and how an architectural scale bar is read: you count
+      // ALONG it from a stated zero. Flush to the bar's own ends, so both labels
+      // sit inside the span that was already fitted — nothing new to place.
+      //
+      // ⚠️ AND THE LENGTH THEN COMES OUT OF THE FOOTER. It used to read
+      // "10 M  1:200" two millimetres above the bar; with the bar stating its
+      // own length that is the same number printed twice, close enough to read
+      // as two different measurements. The footer keeps the RATIO, which the bar
+      // cannot show.
+      const zero = "0";
+      const w0 = measure(zero, { size: BAR_LABEL }).width;
+      const wL = measure(placed.label, { size: BAR_LABEL }).width;
+      // ⚠️ UNLESS THEY WOULD MEET IN THE MIDDLE. A short bar with a long label —
+      // "1000 M" under a 12 mm run — has nowhere to put them, and two labels
+      // colliding over their own bar is worse than a caption. Then the length
+      // goes back to the footer, where it always fitted.
+      const labelled = w0 + wL + BAR_LABEL * 2 <= placed.mm;
+      if (labelled) {
+        const ly = barAt.y + placed.thick + BAR_GAP;
+        addLettering(addFurniture,
+          textStrokes(zero, { x: barAt.x, y: ly, size: BAR_LABEL, anchor: "start" }),
+          OPERATIONS.furniture, BAR_LABEL);
+        addLettering(addFurniture,
+          textStrokes(placed.label,
+            { x: barAt.x + placed.mm, y: ly, size: BAR_LABEL, anchor: "end" }),
+          OPERATIONS.furniture, BAR_LABEL);
+        fText = Math.max(fText, fBar + placed.thick + BAR_GAP + BAR_LABEL + FOOT_GAP);
+      }
+      foot.push(labelled ? `1:${sym.sheet.scale}`
+        : `${bar.metres} M  1:${sym.sheet.scale}`);
     } else furnitureDropped.push("the scale bar");
   }
   if (sym.sheet.north) {

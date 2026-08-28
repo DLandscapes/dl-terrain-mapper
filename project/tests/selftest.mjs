@@ -369,12 +369,21 @@ group("sheet");
       sheet: { scaleBar: true, north: false, frame: false, title: "" } } });
     const f = d2.paths.filter((p) => p.furniture === true);
     if (!f.length) return false;
-    // ⚠️ THE BAR, NOT THE FOOTER. The footer line sits a few millimetres above
-    // it on the same tag, so the window is taken from the bar's OWN baseline —
-    // the lowest furniture on the sheet — and is only as tall as a block.
-    let base = Infinity;
-    for (const p of f) for (let i = 1; i < p.pts.length; i += 2) base = Math.min(base, p.pts[i]);
-    const lid = base + 2.5;
+    // ⚠️ THE BAR, NOT ITS LABELS AND NOT THE FOOTER — AND FOUND BY STRUCTURE, NOT
+    // BY A FIXED WINDOW. The bar's own rows are a contiguous ladder SOLID_MM
+    // apart; above them sits clear space, then the "0", then the footer, all on
+    // the same `furniture` tag. A window "as tall as a block" worked until the
+    // end labels were added and the "0" fell inside it. So: take every furniture
+    // y from the bottom up and stop at the first REAL gap, which is the clear
+    // space under the labels. That cannot be broken by moving them.
+    const ys = [...new Set(f.flatMap((p) => {
+      const a = [];
+      for (let i = 1; i < p.pts.length; i += 2) a.push(+p.pts[i].toFixed(4));
+      return a;
+    }))].sort((a, b) => a - b);
+    const base = ys[0];
+    let lid = base;
+    for (const y of ys) { if (y - lid > 0.5) break; lid = y; }
     let x0 = Infinity, x1 = -Infinity, y0 = base, y1 = -Infinity, thinTop = -Infinity;
     for (const p of f) {
       for (let i = 0; i < p.pts.length; i += 2) {
@@ -406,6 +415,48 @@ group("sheet");
       && Math.abs(inkThick - placed.thick) < 0.05
       && Math.abs(inkThin - placed.thick / 3) < 0.06; })(),
     "length, block thickness and the 1:3 thin half, measured on the ink");
+
+  // ⚠️ THE LABEL IS UPPERCASE BECAUSE THE FACE HAS ONE CASE. `textStrokes()`
+  // falls back to the capital for any lowercase letter, so a bar returning
+  // "10 m" would describe something the plate cannot draw. Kilometres above
+  // 1,000 m, because "5000 M" is a number you count zeros in.
+  ok("the scale bar names its own length, in a case the face can draw", (() => {
+    const at = (mmPerUnit) => scaleBar({ mmPerUnit, margin: 10, width: 900, height: 900 },
+      { target: 45 });
+    const labels = [5, 0.5, 0.05, 0.005, 0.0025].map((k) => at(k).label);
+    return labels.every((l) => l === l.toUpperCase())
+      && labels.some((l) => / M$/.test(l)) && labels.some((l) => / KM$/.test(l)); })(),
+    [5, 0.5, 0.05, 0.005, 0.0025].map((k) =>
+      scaleBar({ mmPerUnit: k, margin: 10, width: 900, height: 900 }, { target: 45 }).label)
+      .join(" · "));
+
+  // ⚠️ "0" AT ONE END AND THE LENGTH AT THE OTHER — and BOTH ends, because a bar
+  // labelled only where it finishes is a bar you cannot tell the start of. They
+  // sit in the band just above the block; the footer is deliberately further up
+  // than that, so the two do not read as three evenly spaced rows.
+  ok("the bar is labelled at both ends, close enough to belong to it", (() => {
+    const d2 = compile({ dem, sym: { contours: { enabled: false },
+      sheet: { scaleBar: true, north: false, frame: false, title: "" } } });
+    const f = d2.paths.filter((p) => p.furniture === true);
+    const ys = [...new Set(f.flatMap((p) => {
+      const a = []; for (let i = 1; i < p.pts.length; i += 2) a.push(+p.pts[i].toFixed(4));
+      return a;
+    }))].sort((a, b) => a - b);
+    let top = ys[0];
+    for (const y of ys) { if (y - top > 0.5) break; top = y; }
+    // the label band: above the block, but nearer to it than the footer is
+    const lo = top, hi = top + 0.6 + 1.8 + 0.05;
+    let x0 = Infinity, x1 = -Infinity, barX0 = Infinity, barX1 = -Infinity, ink = 0;
+    for (const p of f) {
+      for (let i = 0; i < p.pts.length; i += 2) {
+        const x = p.pts[i], y = p.pts[i + 1];
+        if (y <= top + 1e-6) { barX0 = Math.min(barX0, x); barX1 = Math.max(barX1, x); }
+        else if (y > lo && y < hi) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); ink++; }
+      }
+    }
+    // one cluster flush left, one flush right, and nothing hanging off the bar
+    return ink > 0 && Math.abs(x0 - barX0) < 1.5 && Math.abs(x1 - barX1) < 1.5; })(),
+    "ink in the label band at both ends of the bar");
 }
 
 // ── labels ───────────────────────────────────────────────────────────────────
