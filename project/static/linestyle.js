@@ -20,21 +20,36 @@
 // ⚠️ A DOT IS A SHORT DASH, NEVER A POINT. Same rule as the full stop in
 // stroke-font.js, for the same physical reason: a zero-length path is a head
 // that stops and dwells, which burns a hole rather than making a mark. The
-// shortest mark in the table below is 0.25 mm and nothing may go to zero.
+// shortest mark in the table below is `MATERIAL.minMarkMM` and nothing may go to
+// zero.
+//
+// ⚠️ THE DOT WAS 0.25 mm AND IS NOW 0.4 mm, BECAUSE THE COUPON SAID SO. Block D
+// asked for the smallest circle that comes off as a ring rather than as a filled
+// hole, and the answer on 2 mm MDF is 0.4. A 0.25 mm dot is below that: it does
+// not read as a dot, it reads as a hole. The three patterns that carried one
+// have been raised to the measured floor rather than left describing a mark this
+// material cannot make.
+
+import { MATERIAL } from "./material.js";
 
 /**
  * The patterns, in SHEET MILLIMETRES. Lengths are on the material, not in map
  * units — a dash is a mark you see, so it is specified where you see it.
  * @type {Record<string, {label:string, pattern:number[]|null}>}
  */
+const DOT = MATERIAL.minMarkMM;
 export const LINE_STYLES = {
   solid: { label: "Solid", pattern: null },
   dashed: { label: "Dashed", pattern: [3, 1.5] },
   fine_dashed: { label: "Fine dashed", pattern: [1.4, 1] },
   long_dashed: { label: "Long dashed", pattern: [7, 2] },
-  dotted: { label: "Dotted", pattern: [0.25, 1.1] },
-  dash_dot: { label: "Dash-dot", pattern: [4, 1.2, 0.25, 1.2] },
-  dash_dot_dot: { label: "Dash-dot-dot", pattern: [4, 1.2, 0.25, 1.2, 0.25, 1.2] },
+  // ⚠️ MEASURED AS FAILING ON A 12 mm RADIUS (coupon block B). It is kept, not
+  // deleted — a saved symbology may name it, and a style that vanishes is worse
+  // than one that warns. `curveSafe: false` is what makes the warning possible,
+  // and a contour is a curve by definition.
+  dotted: { label: "Dotted", pattern: [DOT, 1.1], curveSafe: false },
+  dash_dot: { label: "Dash-dot", pattern: [4, 1.2, DOT, 1.2] },
+  dash_dot_dot: { label: "Dash-dot-dot", pattern: [4, 1.2, DOT, 1.2, DOT, 1.2] },
 };
 
 /** The order a picker should show them in. */
@@ -95,18 +110,44 @@ export function dashPath(pts, closed, pattern) {
   // mark, it is a stationary head: a dwell, and a burn-through. Scaling the
   // period by at most a third closes the ring evenly instead, which is also what
   // the eye wants: a dashed circle with one odd gap in it looks like a mistake.
+
+  // Anything below this is a dwell rather than a mark, and is dropped. It can
+  // still occur at the far end of an OPEN path, where there is no ring to close.
+  //
+  // ⚠️ MEASURED, NOT REASONED, SINCE 2026-08-28. This was 0.15 mm — a figure
+  // arrived at by thinking about head movement. Coupon block D put the smallest
+  // mark that reads on this material at 0.4 mm, so everything between 0.15 and
+  // 0.4 was being drawn, and burning through instead of marking.
+  const MIN_MARK = MATERIAL.minMarkMM;
+
   let scale = 1;
   if (closed) {
     const len = runLength(pts, true);
-    const reps = Math.max(1, Math.round(len / period));
-    const want = len / reps / period;
+    let reps = Math.max(1, Math.round(len / period));
+    let want = len / reps / period;
+    // ⚠⚠ CLOSING THE RING MUST NEVER SQUEEZE A MARK UNDER THE MATERIAL FLOOR.
+    // These are two rules that had never met: a ring stretches its pattern to
+    // close evenly, and no mark may be shorter than what the material can hold.
+    // While the floor was a reasoned 0.15 mm they could not collide — the
+    // shortest dot was 0.25 mm and the squeeze bottoms out at 0.75. The measured
+    // floor is 0.4 mm and the dot IS 0.4 mm, so ANY squeeze puts it under.
+    //
+    // Measured the moment the coupon was wired in: a 188.5 mm ring wanted a
+    // scale of 0.9975, which took the dot to 0.399 mm — and every single dot on
+    // the ring was dropped. A dotted circle drew NOTHING, with no warning.
+    //
+    // Fitting one FEWER period stretches instead of squeezing, and a longer mark
+    // is never the problem. If that overshoots the stretch limit the pattern is
+    // left alone and the seam runt is dropped, which is what the floor is for.
+    const shortestMark = Math.min(...pattern.filter((_, i) => i % 2 === 0));
+    if (want < 1 && shortestMark * want < MIN_MARK) {
+      reps = Math.max(1, reps - 1);
+      want = len / reps / period;
+    }
     if (want >= 0.75 && want <= 1.34) scale = want;
   }
   pattern = scale === 1 ? pattern : pattern.map((v) => v * scale);
 
-  // Anything below this is a dwell rather than a mark, and is dropped. It can
-  // still occur at the far end of an OPEN path, where there is no ring to close.
-  const MIN_MARK = 0.15;
 
   const pieces = [];
   let cur = [];
@@ -117,7 +158,14 @@ export function dashPath(pts, closed, pattern) {
   const closePiece = () => {
     if (cur.length >= 4) {
       const p = Float64Array.from(cur);
-      if (runLength(p, false) >= MIN_MARK) pieces.push(p);
+      // ⚠️ A MARK EXACTLY AT THE FLOOR IS NOT BELOW IT, AND THE EPSILON IS NOT
+      // COSMETIC. The measured floor is now 0.4 mm and the dot in three of the
+      // patterns IS 0.4 mm, so the pattern's own marks sit precisely on the
+      // threshold and accumulated floating point decides each one. Measured
+      // without the tolerance: dotted laid down 5.6% ink where its duty cycle is
+      // 26.7% — four dots in five silently deleted, on a style that still looked
+      // like it was working.
+      if (runLength(p, false) >= MIN_MARK - 1e-9) pieces.push(p);
     }
     cur = [];
   };

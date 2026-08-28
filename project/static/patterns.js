@@ -99,9 +99,26 @@ const capSpacing = (s, half, maxRows = 400) => Math.max(s, (2 * half) / maxRows)
  * stop reading as lines. Expressing it as geometry rather than as a "filled"
  * flag is the same rule that fixed defect 7.
  *
- * ⚠️ 0.3 mm IS A GUESS AND IS ONE OF THE COUPON'S OWED NUMBERS. Too wide and a
- * "solid" comes off the machine as visible stripes; too tight and it is burn
- * time spent going over ground already black. The SP500 test sheet settles it.
+ * ⚠️ 0.3 mm WAS A GUESS. THE COUPON DID NOT OVERTURN IT — AND DID NOT QUITE
+ * MEASURE IT EITHER, WHICH IS WORTH BEING PRECISE ABOUT.
+ *
+ * There is no block on the sheet that lays engraved lines at a ladder of
+ * spacings and asks which one stops reading as stripes. What block D gives is a
+ * BOUND: the smallest circle that comes off as a ring rather than as a filled
+ * hole is 0.4 mm, and 0.3 mm came back closed. A traced circle of diameter d
+ * closes when the burn covers its middle, so the burn is at least about 0.3 mm
+ * wide and less than about 0.4. The spacing at which such burns merge sits at
+ * the bottom of that window — which is where 0.3 already was.
+ *
+ * ⚠️ AND THE KERF IS NOT THIS NUMBER. Block E measured 0.18 mm, and it is
+ * tempting to read that as the burn width and halve every spacing in the tool.
+ * It is the wrong pass: kerf is material REMOVED by a CUT, at its own power and
+ * speed and measured on a through-cut edge. What matters for a solid field is
+ * how wide an engraved line READS once the board has charred, which is what
+ * block D saw. See `MATERIAL.kerfMM` in `material.js`.
+ *
+ * ⚠️ SO THIS IS A BOUNDED INFERENCE, NOT A READING, and the honest fix is one
+ * more block on the next coupon. `NOT_MEASURED` in `material.js` says so.
  */
 export const SOLID_MM = 0.3;
 
@@ -117,9 +134,11 @@ export const SOLID_MM = 0.3;
  * grey seams, which is the preview inventing a defect the material will not
  * have.
  *
- * ⚠️ 15% IS THE COMMON WORKSHOP FIGURE AND IS A GUESS LIKE ITS PARENT. It is
- * tied to `SOLID_MM` rather than set on its own so the coupon settles both with
- * one reading, and so the two can never drift apart.
+ * ⚠️ 15% IS THE COMMON WORKSHOP FIGURE AND IS STILL A GUESS, like its parent.
+ * It is tied to `SOLID_MM` rather than set on its own so one reading settles
+ * both, and so the two can never drift apart. Block D puts the burn between
+ * about 0.3 and 0.4 mm; 0.345 sits inside that window, which is the most that
+ * can be said for it.
  *
  * ⚠️ THIS IS FOR DRAWING ONLY, NEVER FOR SPACING. Fills step at `SOLID_MM`.
  * Stepping them at the burn width instead would leave real gaps.

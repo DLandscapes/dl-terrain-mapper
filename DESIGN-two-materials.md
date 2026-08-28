@@ -11,7 +11,8 @@ materials — one base material and one that shows the fill or cut, like an nDSM
 > and a "Second material" section in the properties window with the difference-of-two-layers
 > source. Run against the real `orndalen_DIFF_2006_2024.tif`: 25 disturbed patches above 2 m,
 > 210,927 m², mean |dz| 5.94 m — the demo files are in `output/`. §5d (kerf-compensated inlay)
-> remains deliberately unbuilt until the material test sheet returns a measured kerf.
+> remains deliberately unbuilt — but the blocker is gone: the coupon was read on
+> **2026-08-28** and the kerf on 2 mm MDF / Trotec SP500 is **0.18 mm**. See §5d.
 
 ---
 
@@ -171,9 +172,16 @@ One vertical slice, in this order, and it is small because §4 did most of the w
 4. The demonstration: an nDSM plate as **base + canopy overlay**, and a difference plate as
    **base with voids + fill overlay + backing**.
 
-Kerf-compensated inlay comes after the material test sheet gives a measured kerf. Until then any
-offset value would be a guess, and this is precisely the kind of guess that is only discovered
-to be wrong after both sheets are cut.
+✅ **The kerf is measured: 0.18 mm** (coupon block E, callipers on the dropped square, 2 mm MDF
+on a Trotec SP500, 2026-08-28 — recorded in `project/static/material.js` as `MATERIAL.kerfMM`).
+So the inlay offset is **0.09 mm outward on each side of the piece**, or equivalently 0.18 mm on
+the diameter. The blocker on §5d was never the offsetting algorithm; it was not knowing the
+number, and this is precisely the kind of guess that is only discovered to be wrong after both
+sheets are cut.
+
+⚠️ **The number is per material and per machine, and 0.18 mm is a CUT-pass reading.** It is not
+the width of an engraved line — different pass, different power and speed. Do not reuse it as a
+mark width; `SOLID_MM` in `patterns.js` explains why at length.
 
 ## 9 · The question I cannot answer from here
 

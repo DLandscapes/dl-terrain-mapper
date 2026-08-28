@@ -32,6 +32,7 @@ import { hachureLines } from "./hachures.js";
 import { traceRegions, clipRingToRect } from "./regions.js";
 import { hatchField } from "./hatch.js";
 import { SOLID_MM, BURN_MM } from "./patterns.js";
+import { MATERIAL } from "./material.js";
 import { strokeBand, bandFill } from "./stroke-band.js";
 import { cutSections } from "./sections.js";
 import { clipDrawing, ringsBBox, pointInRings } from "./clip.js";
@@ -335,6 +336,19 @@ export function compile(input) {
   // sort by layer, and an engraved field under line work is the right sequence:
   // engrave the ground, then score the lines over it, then cut. Reversed, the
   // engraver's smoke and debris settle across finished score lines.
+  // ⚠️ THE LIGHTEST TONES HAVE A FLOOR, AND SINCE 2026-08-28 IT IS MEASURED. This
+  // was `r > 0.05` — a 0.1 mm dot, kept only because it was not zero. Coupon
+  // block D put the smallest circle that comes off as a RING rather than as a
+  // punched hole at 0.4 mm on this material, so every dot between 0.1 and 0.4 mm
+  // was being written and would have burnt THROUGH the board instead of marking
+  // it. That is the one failure on this list you cannot sand out afterwards.
+  //
+  // ⚠️ DROPPING THEM SHORTENS THE TONAL RANGE, AND IT IS SAID OUT LOUD. The
+  // palest greys now carry no mark at all — which is what the material can do,
+  // and a reader comparing the preview with the plate has to be told rather than
+  // left to find out.
+  const MIN_DOT_R = MATERIAL.minMarkMM / 2;
+  let dotsTooSmall = 0;
   let halftoneReport = null;
   if (sym.halftone.enabled && input.image) {
     if (input.forExport) assertExportable(input.image);
@@ -344,7 +358,8 @@ export function compile(input) {
     const put = (sy) => {
       for (const t of sy) {
         const r = sheet.L(t.r);
-        if (r > 0.05) circles.push({ cx: sheet.X(t.x), cy: sheet.Y(t.y), r, layer: OPERATIONS.halftone, kind: "halftone" });
+        if (r >= MIN_DOT_R) circles.push({ cx: sheet.X(t.x), cy: sheet.Y(t.y), r, layer: OPERATIONS.halftone, kind: "halftone" });
+        else if (r > 0) dotsTooSmall++;
       }
     };
     if (sym.halftone.mode === "triple") {
@@ -353,7 +368,8 @@ export function compile(input) {
       t.layers.forEach((L, i) => {
         for (const q of L.symbols) {
           const r = sheet.L(q.r);
-          if (r > 0.05) circles.push({ cx: sheet.X(q.x), cy: sheet.Y(q.y), r, layer: passes[i], kind: "halftone" });
+          if (r >= MIN_DOT_R) circles.push({ cx: sheet.X(q.x), cy: sheet.Y(q.y), r, layer: passes[i], kind: "halftone" });
+          else if (r > 0) dotsTooSmall++;
         }
         if (!L.recommended) {
           warnings.push(`Halftone channel "${L.label}" is a raw sensor band — it engraves `
@@ -376,6 +392,17 @@ export function compile(input) {
     }
     if (input.image.licence === "restricted") {
       warnings.push(`The image is licence-restricted: it can be previewed, and export is blocked.`);
+    }
+    // ⚠️ SAID, NOT SWALLOWED. The alternative is a plate whose highlights are
+    // blank where the preview showed texture, with no way to tell that from a
+    // bug. It names the number the floor came from, so a reader can see it is a
+    // property of the BOARD and not a limit of the tool.
+    if (dotsTooSmall) {
+      warnings.push(`Halftone: ${dotsTooSmall} dot${dotsTooSmall === 1 ? " was" : "s were"} `
+        + `smaller than ${MATERIAL.minMarkMM} mm and not drawn — below that a dot burns `
+        + `through ${MATERIAL.name} instead of marking it (coupon block D, `
+        + `${MATERIAL.read}). The palest tones carry no mark. Use a coarser grid, or `
+        + `raise the contrast, if the highlights matter.`);
     }
   }
 
@@ -425,6 +452,20 @@ export function compile(input) {
     };
     const mid = emit(false, c.style, c.pass);
     const idx = emit(true, c.indexStyle, c.indexPass);
+    // ⚠️ THE COUPON MEASURED THIS ONE FAILING ON A CURVE, AND A CONTOUR IS A CURVE
+    // BY DEFINITION. The style is still offered — a saved symbology may name it,
+    // and on a straight run it is fine — but choosing it for contours on this
+    // material is choosing a pattern that was tested and did not read. Said once
+    // per layer, naming the material, because the reading belongs to the board
+    // and not to the tool.
+    for (const [which, k] of [["contours", c.style], ["index contours", c.indexStyle]]) {
+      if (LINE_STYLES[k] && LINE_STYLES[k].curveSafe === false) {
+        warnings.push(`${layer.name || "raster"}: ${styleLabel(k)} did not read on a `
+          + `12 mm radius in the ${MATERIAL.name} test (coupon block B, `
+          + `${MATERIAL.read}), and ${which} are curves. Straight runs are fine; on `
+          + `this material a contour drawn with it will come back as a row of holes.`);
+      }
+    }
 
     // ── hachures: strokes down the fall line, hung off these contours ──────
     // ⚠️ HUNG OFF THE CONTOURS THAT WERE ACTUALLY TRACED, in MAP units, before
@@ -672,10 +713,10 @@ export function compile(input) {
         }
         circles.push({ cx, cy, r, layer, kind: "symbols" });
         if (style === "hatched") {
-          // ⚠️ 0.3 mm minimum chord — the same runt floor the hatch field keeps,
-          // and the same guess, waiting on the same coupon.
+          // ⚠️ MINIMUM CHORD — the same runt floor the hatch field keeps, and no
+          // longer a guess: coupon block D, 0.4 mm on this material.
           for (const c of hatchCircle(cx, cy, r, hatchMM,
-            { angleDeg: spec.hatchAngle ?? 45, minLength: 0.3 })) {
+            { angleDeg: spec.hatchAngle ?? 45, minLength: MATERIAL.minMarkMM })) {
             add(c, layer, false, undefined, "symbols");
             chords++;
           }
@@ -797,10 +838,11 @@ export function compile(input) {
       angleDeg: spec.angleDeg ?? 45,
       invert: !!spec.invert,
       floor: spec.floor,
-      // ⚠️ 0.3 mm ON THE SHEET is the runt floor until the coupon says better —
-      // the same failure class as the dash-ring runt: a shorter mark is a
-      // near-stationary burn.
-      minMark: 0.3 / sheet.mmPerUnit,
+        // ⚠️ THE RUNT FLOOR, AND THE COUPON HAS NOW SAID BETTER. This was 0.3 mm
+        // on the sheet, reasoned from head movement; block D MEASURED 0.4 mm as
+        // the smallest mark that reads on this material. Same failure class as
+        // the dash-ring runt: a shorter mark is a near-stationary burn.
+        minMark: MATERIAL.minMarkMM / sheet.mmPerUnit,
     });
     let drawn = 0;
     for (const p of f.paths) {

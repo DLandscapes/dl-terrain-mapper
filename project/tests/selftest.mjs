@@ -24,6 +24,7 @@ import { readTIFF, readElevation } from "../static/geotiff.js";
 import { makeExifJPEG } from "./exif-fixture.mjs";
 import { makeTIFF, tiffLZWEncode } from "./tiff-fixture.mjs";
 import { dashPath, applyStyle, LINE_STYLES, STYLE_ORDER, styleLabel } from "../static/linestyle.js";
+import { MATERIAL } from "../static/material.js";
 import { PASS_COLOURS, passColour } from "../static/dxf.js";
 import { parseXML, readProps } from "../static/xml.js";
 import { buildTestSheet, testSheetProcedure, TYPE_LADDER, DOT_LADDER } from "../static/testsheet.js";
@@ -687,6 +688,40 @@ group("symbols and halftone");
   ok("a triple halftone is three coexisting layers", tri.layers.length === 3);
   ok("the triple's mark count is tripled in the budget",
     tri.budget.marks === 3 * tri.layers[0].symbols.length);
+
+  // ⚠⚠ A DOT BELOW THE MATERIAL FLOOR BURNS THROUGH THE BOARD. It does not come
+  // out faint — it punches. The floor was `r > 0.05`, a 0.1 mm dot kept only
+  // because it was not zero; coupon block D measured 0.4 mm as the smallest
+  // circle that reads as a ring rather than as a hole. This is the one item on
+  // the coupon's list that cannot be sanded out afterwards, so it is checked on
+  // a full black-to-white ramp, where every tone occurs.
+  ok("no halftone dot is written below the material's smallest mark", (() => {
+    const W = 96, H = 96;
+    const ramp = { width: W, height: H, cell: 1, originX: 0, originY: H, licence: "own",
+      rgb: new Uint8ClampedArray(W * H * 3) };
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const v = Math.round((255 * x) / (W - 1)), i = (y * W + x) * 3;
+        ramp.rgb[i] = ramp.rgb[i + 1] = ramp.rgb[i + 2] = v;
+      }
+    }
+    const d2 = compile({ dem: makeDEM(W, H, 1, () => 60, { originX: 0, originY: H }),
+      image: ramp,
+      sym: { sheet: { scale: 200, frame: false, scaleBar: false, north: false, title: "" },
+        contours: { enabled: false },
+        halftone: { enabled: true, mode: "vector", across: 120, channel: "luminance" } } });
+    if (!d2.circles.length) return false;
+    const under = d2.circles.filter((c) => c.r * 2 < MATERIAL.minMarkMM - 1e-9).length;
+    // ⚠️ THE GRID IS DELIBERATELY FINE ENOUGH THAT SOME DOTS ARE REFUSED. A
+    // coarse one drops nothing, so it would assert the floor without ever
+    // reaching it — the check would pass with the floor removed. At this
+    // density the pale end of the ramp genuinely falls under 0.4 mm, so both
+    // halves are exercised: nothing under the floor survives, AND the refusal
+    // is NAMED, because a blank highlight otherwise reads as a bug rather than
+    // as the board.
+    const said = d2.warnings.some((w) => /smaller than .* and not drawn/.test(w));
+    return under === 0 && said; })(),
+    `floor ${MATERIAL.minMarkMM} mm`);
   ok("nested maxima keep the three circles distinguishable", (() => {
     const m = tri.layers.map((L) => Math.max(...L.symbols.map((s) => s.r)));
     return m[0] > m[1] && m[1] > m[2]; })());
@@ -2289,6 +2324,59 @@ group("line styles");
   ok("the cost of dashing is reported, not hidden", (() => {
     const r = applyStyle([{ pts: new Float64Array(ring), closed: true }], "dotted");
     return r.before === 1 && r.after > 100 && typeof r.verdict === "string"; })());
+
+  // ⚠⚠ CLOSING A RING MUST NEVER SQUEEZE A MARK UNDER THE MATERIAL FLOOR, AND
+  // THIS IS THE CHECK THAT WOULD HAVE CAUGHT IT. Two rules that had never met:
+  // a closed ring stretches its pattern to close evenly, and no mark may be
+  // shorter than what the material can hold. While the floor was a reasoned
+  // 0.15 mm they could not collide. The measured floor is 0.4 mm and the dot IS
+  // 0.4 mm, so any squeeze at all put it under — and on a 188.5 mm ring the
+  // wanted scale was 0.9975, which deleted EVERY dot. A dotted circle drew
+  // nothing at all, silently. Swept across radii because whether it bites
+  // depends on how the circumference happens to divide by the period.
+  ok("a dotted ring is never emptied by the arithmetic that closes it", (() => {
+    for (const R of [2, 3, 5, 8, 12, 20, 30, 50, 77]) {
+      const g = [];
+      for (let i = 0; i <= 96; i++) {
+        const a2 = (2 * Math.PI * i) / 96;
+        g.push(R * Math.cos(a2), R * Math.sin(a2));
+      }
+      const r = applyStyle([{ pts: new Float64Array(g), closed: true }], "dotted");
+      // enough marks to be a dotted ring, and every one at or above the floor
+      const circ = 2 * Math.PI * R;
+      if (r.after < circ / 3) return false;
+      for (const p2 of r.paths) {
+        let L = 0;
+        for (let i = 2; i < p2.length; i += 2) L += Math.hypot(p2[i] - p2[i - 2], p2[i + 1] - p2[i - 1]);
+        if (L < MATERIAL.minMarkMM - 1e-6) return false;
+      }
+    }
+    return true; })(),
+    "swept over nine radii");
+
+  // ⚠️ AND NO STYLE MAY SHIP A MARK THE MATERIAL CANNOT MAKE. The table is the
+  // tool's own offer; a pattern naming a 0.25 mm dot on a board whose floor is
+  // 0.4 mm is an offer that comes back as a row of holes.
+  ok("every offered line style is makeable on this material",
+    STYLE_ORDER.every((k) => {
+      const pat = LINE_STYLES[k].pattern;
+      return !pat || pat.filter((_, i) => i % 2 === 0)
+        .every((m) => m >= MATERIAL.minMarkMM - 1e-9);
+    }),
+    STYLE_ORDER.map((k) => {
+      const pat = LINE_STYLES[k].pattern;
+      return `${k}:${pat ? Math.min(...pat.filter((_, i) => i % 2 === 0)) : "-"}`;
+    }).join(" "));
+
+  // ⚠️ BLOCK B IS RECORDED IN THE TABLE, NOT IN A COMMENT. Dotted failed on the
+  // 12 mm radius, and a contour is a curve by definition — so the fact has to be
+  // somewhere the code can read, or it is just a note nobody acts on.
+  ok("the style the coupon failed on a curve is marked as such",
+    MATERIAL.failedOnCurve.length > 0
+    && MATERIAL.failedOnCurve.every((k) => LINE_STYLES[k] && LINE_STYLES[k].curveSafe === false)
+    && STYLE_ORDER.filter((k) => LINE_STYLES[k].curveSafe === false).join(",")
+       === MATERIAL.failedOnCurve.join(","),
+    MATERIAL.failedOnCurve.join(","));
 }
 
 // ── several rasters on one sheet ─────────────────────────────────────────────
