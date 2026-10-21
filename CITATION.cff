@@ -1,27 +1,60 @@
+# Citation metadata. GitHub renders this into a "Cite this repository"
+# button.
+#
+# `doi` is the VERSION DOI, reserved on Zenodo BEFORE the tag - the same
+# reserve-first route as DL-TerrainDiversity and DL-TerrainSlicer. That order
+# is what lets the archived snapshot carry a citation file that knows its own
+# identifier; the Zenodo-GitHub integration would mint it only after the tag,
+# so the deposit would name a DOI it does not have. Every release reserves a
+# NEW one (Zenodo record -> New version -> Get a DOI now!); never carry this
+# one forward.
+#
+# `version` must equal the release tag without its "v".
+#
+# No e-mail address here, deliberately: a deposit is permanent in DataCite,
+# and DL-TerrainSlicer's citation file carries none either.
 cff-version: 1.2.0
 title: "DL-TerrainMapper"
 message: "If you use this tool in a publication or in teaching, please cite it."
 type: software
 authors:
-  - given-names: Marc
-    family-names: Ihle
+  - family-names: Ihle
+    given-names: Marc-Eduard
+    # Standing rule: a Digital Landscapes tool names Digital Landscapes,
+    # never a university.
     affiliation: "Digital Landscapes"
-    email: marc.ihle@digital-landscapes.com
-repository-code: "https://github.com/DLandscapes/dl-terrain-mapper"
-url: "https://digital-landscapes.com/"
 abstract: >-
   A laser-cut map compiler. Terrain and field observations go in; a fabricable
-  drawing comes out — engraved contours, labelled heights, located photograph
-  marks, hachures, halftones, sections and thresholded material regions — where
-  the symbology maps to laser operations instead of to screen pixels. One
-  raster can be translated several ways at once: the value as a line's
-  position, as a symbol's size, as the density of ink, or as height against
-  distance along a cut.
+  drawing comes out - engraved contours, labelled heights, hachures, located
+  photograph marks, halftones, sections and thresholded material regions -
+  where the symbology maps to laser operations instead of to screen pixels.
+  One raster can be translated seven ways at once, and the translations
+  compose rather than exclude. Shapefile and GML features carry
+  attribute-driven styling, and a clip-to-tile stage runs last, so every
+  pattern is anchored to the ground rather than to a plate and two
+  neighbouring plates cannot disagree. Four ways out - DXF, SVG, a greyscale
+  raster engrave with its cut lines beside it, and shapefiles back to QGIS -
+  all render the same compiled drawing, so the preview cannot disagree with
+  the file. Runs entirely in the browser with no build step, no dependencies
+  and no network calls: field photographs are read in the tab and never leave
+  the machine.
 keywords:
-  - landscape architecture
-  - terrain model
   - laser cutting
   - cartography
-  - GeoTIFF
+  - map
+  - terrain model
+  - digital terrain model
+  - field observation
   - digital fabrication
+  - DXF
+  - SVG
+  - GeoTIFF
+  - shapefile
+  - GML
+  - landscape architecture
 license: Apache-2.0
+repository-code: "https://github.com/DLandscapes/dl-terrain-mapper"
+url: "https://digital-landscapes.com/terrain-mapper/"
+version: "0.1.0"
+date-released: "2026-10-21"
+doi: "10.5281/zenodo.23512188"
