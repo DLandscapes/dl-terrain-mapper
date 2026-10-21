@@ -1,6 +1,6 @@
 # DL-TerrainMapper
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23512188.svg)](https://doi.org/10.5281/zenodo.23512188)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23512187.svg)](https://doi.org/10.5281/zenodo.23512187)
 
 **A laser-cut map compiler.** Terrain and field observations go in; a fabricable
 drawing comes out — engraved contours, labelled heights, hachures, located
@@ -190,8 +190,10 @@ Releases are archived on Zenodo, each with its own DOI (from v0.1.0):
 
 - **One specific release:** its version DOI — v0.1.0 =
   [10.5281/zenodo.23512188](https://doi.org/10.5281/zenodo.23512188).
-- **The tool, any version:** the concept DOI, which always resolves to the
-  latest release. Added here once the first deposit is published.
+- **The tool, any version:** concept DOI
+  [10.5281/zenodo.23512187](https://doi.org/10.5281/zenodo.23512187) — it always
+  resolves to the latest release, and is the one to cite unless a specific
+  version matters.
 
 `CITATION.cff` carries the same metadata, so GitHub's **Cite this repository**
 button and the Zenodo record agree.
